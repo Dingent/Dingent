@@ -54,17 +54,17 @@ Write API-level integration tests that:
 1) Create minimum DB records in the test database.
    - Create `Workspace(slug=..., allow_guest_access=True)`.
    - Insert a workflow with 1-2 assistants as needed for A/C.
-   - For A/C determinism and isolation, prefer assistants with `plugins=[]` (no plugin links), so graph build does not need any MCP/plugin runtime.
+   - For A/C determinism and isolation, prefer assistants with no plugin links (no `AssistantPluginLink` rows), so graph build does not need any MCP/plugin runtime.
    - In guest-mode requests, use a single `visitor_id` (UUID string) and reuse it across all calls; send header key exactly as used by the router: `X-Visitor-ID`.
 2) Patch `dingent.core.llms.service.get_llm_for_context` to return a Fake LLM that supports `bind_tools`.
 3) Patch tool loading to avoid external MCP/plugin side effects.
-   - For A/C, patch `dingent.core.assistants.assistant.AssistantRuntime.load_tools` to yield an empty list (no external tools).
+   - For A/C, patch `dingent.core.assistants.assistant.AssistantRuntime.load_tools` to return an async context manager that yields an empty list (no external tools).
    - Additionally, add a guard patch so that if plugin runtime creation is accidentally triggered, the test fails fast (e.g., patch `dingent.core.plugins.plugin_manager.PluginManager.get_or_create_runtime` to raise in A/C tests).
 
-Note on handoff tools: handoff tools are created from the workflow adjacency map (not from plugin tool loading) and are still present even if `AssistantRuntime.load_tools` is patched to yield `[]`.
-3) Call `/api/v1/{ws.slug}/chat/agent/{workflow_name}/run` via `fastapi.testclient.TestClient`.
-4) Parse the returned SSE payload as plain text and assert presence of key event fragments.
-5) For multi-turn: re-run with the same `threadId` and validate persistence by calling `/connect` and reading its message snapshot.
+Note on handoff tools: handoff tools are created from the workflow adjacency map (not from plugin tool loading) and are still present even if `AssistantRuntime.load_tools` yields `[]`.
+4) Call `/api/v1/{ws.slug}/chat/agent/{workflow_name}/run` via `fastapi.testclient.TestClient`.
+5) Parse the returned SSE payload as plain text and assert presence of key event fragments.
+6) For multi-turn: re-run with the same `threadId` and validate persistence by calling `/connect` and reading its message snapshot.
 
 Why patch `get_llm_for_context` (instead of overriding `get_copilot_sdk`):
 
