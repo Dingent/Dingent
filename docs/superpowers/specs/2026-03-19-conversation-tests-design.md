@@ -54,10 +54,12 @@ Write API-level integration tests that:
 1) Create minimum DB records in the test database.
    - Create `Workspace(slug=..., allow_guest_access=True)`.
    - Insert a workflow with 1-2 assistants as needed for A/C.
+   - For A/C determinism and isolation, prefer assistants with `plugins=[]` (no plugin links), so graph build does not need any MCP/plugin runtime.
    - In guest-mode requests, use a single `visitor_id` (UUID string) and reuse it across all calls; send header key exactly as used by the router: `X-Visitor-ID`.
 2) Patch `dingent.core.llms.service.get_llm_for_context` to return a Fake LLM that supports `bind_tools`.
 3) Patch tool loading to avoid external MCP/plugin side effects.
    - For A/C, patch `dingent.core.assistants.assistant.AssistantRuntime.load_tools` to yield an empty list (no external tools).
+   - Additionally, add a guard patch so that if plugin runtime creation is accidentally triggered, the test fails fast (e.g., patch `dingent.core.plugins.plugin_manager.PluginManager.get_or_create_runtime` to raise in A/C tests).
 3) Call `/api/v1/{ws.slug}/chat/agent/{workflow_name}/run` via `fastapi.testclient.TestClient`.
 4) Parse the returned SSE payload as plain text and assert presence of key event fragments.
 5) For multi-turn: re-run with the same `threadId` and validate persistence by calling `/connect` and reading its message snapshot.
@@ -82,12 +84,33 @@ Agent B then emits a normal assistant message (final response), e.g. containing 
 
 For scenario A (multi-turn), we can keep a single-agent workflow (fallback spec) OR reuse the same workflow but avoid handoff by returning plain assistant messages. To avoid DB setup complexity, we will reuse `mock_full_single_cell_data` but structure the Fake LLM responses so the first run produces an assistant answer without handoff; the second run produces a different assistant answer. (This keeps the API path consistent.)
 
-Implementation detail: because `GraphFactory.build(...)` passes the same `llm` instance to all assistants by default, the Fake model must be deterministic even when multiple assistants are involved.
+Implementation detail: the engine supports resolving a distinct LLM per assistant when `create_assistant_graphs(...)` is called with a callable resolver.
 
-- Option A (recommended): a routing Fake LLM that selects responses by a stable marker in the prompt/messages (e.g., assistant name or system prompt). It should also tolerate extra model calls by returning a safe default once expected replies are exhausted.
-- Option B (fallback): a pre-seeded response sequence that matches the expected call order, over-provisioned to handle extra calls.
+To reduce flakiness, tests will prefer a per-assistant Fake LLM strategy:
 
-We will implement Option A first; if assistant identity is not reliably observable, we fall back to Option B with over-provisioning.
+- Patch `get_llm_for_context` to return a resolver callable (or an object whose `__call__` resolves) that returns a dedicated Fake LLM instance per assistant.
+- Each Fake LLM has its own response queue, eliminating cross-assistant call-order coupling.
+
+If the current runtime assumes `get_llm_for_context` returns a concrete `BaseChatModel` only, then we fall back to routing within a single Fake LLM instance.
+
+- Option A (recommended): per-assistant Fake LLM via resolver (preferred).
+- Option B: a routing Fake LLM that selects responses by a stable marker in the prompt/messages (preferably the assistant system prompt text). It should also tolerate extra model calls by returning a safe default once expected replies are exhausted.
+- Option C (fallback): a pre-seeded response sequence that matches the expected call order, over-provisioned to handle extra calls.
+
+We will implement the per-assistant resolver first; if not compatible with the current build path, we fall back to routing or over-provisioned sequences.
+
+### Minimal Workflow Fixture (A/C)
+
+To avoid any plugin/MCP side effects, A/C tests will create a minimal workflow in the DB with assistants that have no plugins.
+
+Proposed helper (new test utility; exact location decided during implementation):
+
+- Create 2 assistants `AgentA` and `AgentB` with:
+  - `instructions` containing a unique marker per agent (e.g., `"SYSTEM_AGENT_A"`, `"SYSTEM_AGENT_B"`) so the routing Fake LLM can reliably select responses.
+  - `plugin_links=[]` / `plugins=[]` (no `AssistantPluginLink` rows).
+- Create a workflow with 2 nodes and an edge `AgentA -> AgentB` and `start_node=AgentA`.
+
+This replaces using `mock_full_single_cell_data` for A/C. The single-cell fixture remains useful for later scenario B (tool/artifact) where tool plumbing is intentionally exercised.
 
 ### Request Templates
 
@@ -131,7 +154,7 @@ Test: `test_run_multi_turn_persists_messages_and_connect_snapshots`
 
 Steps:
 
-1) Create workspace + workflow records.
+1) Create workspace + workflow records (minimal, no plugins).
 2) Patch `get_llm_for_context` to return Fake LLM with responses:
    - Run 1: `AIMessage(content="A1")`
    - Run 2: `AIMessage(content="A2")`
@@ -151,7 +174,7 @@ Test: `test_run_handoff_transfers_to_second_agent_and_returns_final_answer`
 
 Steps:
 
-1) Create workspace + workflow with two assistants connected by an edge (A -> B).
+1) Create workspace + workflow with two assistants connected by an edge (A -> B), with no plugins.
 2) Patch `get_llm_for_context` to return Fake LLM responses in this sequence:
    - First assistant call: `AIMessage(content="", tool_calls=[{"name": "transfer_to_Analyst", "args": {}, "id": "call_1"}])`
    - Second assistant call: `AIMessage(content="FINAL_FROM_ANALYST")`
@@ -182,7 +205,7 @@ This is intentionally tolerant to encoder changes while still catching regressio
 - Risk: tool name normalization mismatch (`transfer_to_Analyst` vs `transfer_to_analyst`).
   - Mitigation: derive expected tool name from the DB fixture (assistant name + `normalize_agent_name`) inside the test.
 - Risk: tests become flaky if external plugin runtime is invoked.
-  - Mitigation: for A/C, patch tool loading to yield an empty tool list; only handoff tool remains (pure in-process).
+  - Mitigation: for A/C, avoid plugin-linked assistants entirely; additionally patch tool loading to yield an empty tool list; only handoff tool remains (pure in-process).
 - Risk: checkpointer persistence can leak across tests.
   - Mitigation: ensure tests use isolated checkpoint DB (either per-test temporary `paths.sqlite_path` or a patched/in-memory checkpointer in app state), and never share `threadId` across tests.
 - Risk: header alias mismatch (`X-Visitor-Id` vs `X-Visitor-ID`) introduces false failures.
