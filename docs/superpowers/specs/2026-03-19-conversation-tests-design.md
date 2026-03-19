@@ -42,12 +42,22 @@ Deferred scenario:
 - A ready-made 2-agent workflow fixture exists:
   - `tests/setup_data.py::mock_full_single_cell_data` creates a workflow `single-cell` with assistants `DataGetter -> Analyst`.
 
+Important: the graph build path eagerly loads assistant tools.
+
+- `CopilotKitSdk.resolve_agent(...)` -> `GraphFactory.build(...)` -> `create_assistant_graphs(...)` -> `AssistantFactory.create_runtime(...)` -> `AssistantRuntime.load_tools()`.
+- Even if a test never invokes a tool, `load_tools()` can attempt MCP/client initialization. The test design must explicitly isolate this.
+
 ## Recommended Approach
 
 Write API-level integration tests that:
 
-1) Create workspace + workflow records in the test database (reuse existing fixture helper).
+1) Create minimum DB records in the test database.
+   - Create `Workspace(slug=..., allow_guest_access=True)`.
+   - Insert a workflow with 1-2 assistants as needed for A/C.
+   - In guest-mode requests, use a single `visitor_id` (UUID string) and reuse it across all calls; send header key exactly as used by the router: `X-Visitor-ID`.
 2) Patch `dingent.core.llms.service.get_llm_for_context` to return a Fake LLM that supports `bind_tools`.
+3) Patch tool loading to avoid external MCP/plugin side effects.
+   - For A/C, patch `dingent.core.assistants.assistant.AssistantRuntime.load_tools` to yield an empty list (no external tools).
 3) Call `/api/v1/{ws.slug}/chat/agent/{workflow_name}/run` via `fastapi.testclient.TestClient`.
 4) Parse the returned SSE payload as plain text and assert presence of key event fragments.
 5) For multi-turn: re-run with the same `threadId` and validate persistence by calling `/connect` and reading its message snapshot.
@@ -72,12 +82,34 @@ Agent B then emits a normal assistant message (final response), e.g. containing 
 
 For scenario A (multi-turn), we can keep a single-agent workflow (fallback spec) OR reuse the same workflow but avoid handoff by returning plain assistant messages. To avoid DB setup complexity, we will reuse `mock_full_single_cell_data` but structure the Fake LLM responses so the first run produces an assistant answer without handoff; the second run produces a different assistant answer. (This keeps the API path consistent.)
 
-Implementation detail: because `GraphFactory.build(...)` passes the same `llm` instance to all assistants by default, we will use a Fake model that can serve deterministic responses across multiple calls, and in the handoff test we will instead patch at a finer granularity if required:
+Implementation detail: because `GraphFactory.build(...)` passes the same `llm` instance to all assistants by default, the Fake model must be deterministic even when multiple assistants are involved.
 
-- Option A (preferred): create a composite Fake model that returns responses based on the system prompt or current active agent name (if accessible in the prompt/messages).
-- Option B (fallback): avoid needing per-assistant LLM instances by returning a response sequence that matches the expected call order (Agent A first, then Agent B).
+- Option A (recommended): a routing Fake LLM that selects responses by a stable marker in the prompt/messages (e.g., assistant name or system prompt). It should also tolerate extra model calls by returning a safe default once expected replies are exhausted.
+- Option B (fallback): a pre-seeded response sequence that matches the expected call order, over-provisioned to handle extra calls.
 
-We will start with Option B and only implement Option A if call-order proves nondeterministic.
+We will implement Option A first; if assistant identity is not reliably observable, we fall back to Option B with over-provisioning.
+
+### Request Templates
+
+Both `/run` and `/connect` accept a `RunAgentInput`-shaped body. Tests will send a consistent payload skeleton:
+
+```json
+{
+  "threadId": "<uuid>",
+  "runId": "run-1",
+  "parentRunId": null,
+  "state": {},
+  "messages": [{"id": "m1", "role": "user", "content": "Hello"}],
+  "tools": [],
+  "context": [],
+  "forwardedProps": {}
+}
+```
+
+Headers:
+
+- `Accept: text/event-stream`
+- guest mode: `X-Visitor-ID: <uuid>`
 
 ## Test Layout
 
@@ -99,7 +131,7 @@ Test: `test_run_multi_turn_persists_messages_and_connect_snapshots`
 
 Steps:
 
-1) Create workspace + workflow (`mock_full_single_cell_data`).
+1) Create workspace + workflow records.
 2) Patch `get_llm_for_context` to return Fake LLM with responses:
    - Run 1: `AIMessage(content="A1")`
    - Run 2: `AIMessage(content="A2")`
@@ -119,12 +151,12 @@ Test: `test_run_handoff_transfers_to_second_agent_and_returns_final_answer`
 
 Steps:
 
-1) Create workspace + workflow (`mock_full_single_cell_data`).
+1) Create workspace + workflow with two assistants connected by an edge (A -> B).
 2) Patch `get_llm_for_context` to return Fake LLM responses in this sequence:
    - First assistant call: `AIMessage(content="", tool_calls=[{"name": "transfer_to_Analyst", "args": {}, "id": "call_1"}])`
    - Second assistant call: `AIMessage(content="FINAL_FROM_ANALYST")`
 3) POST `/run` with `threadId=T`, user message `"please analyze"`.
-4) Verify SSE contains:
+4) Verify SSE contains (substring checks):
    - the tool name `transfer_to_Analyst` (handoff requested)
    - the tool result message `Transferred to Analyst` (from `create_handoff_tool`)
    - the final marker `FINAL_FROM_ANALYST`
@@ -150,8 +182,17 @@ This is intentionally tolerant to encoder changes while still catching regressio
 - Risk: tool name normalization mismatch (`transfer_to_Analyst` vs `transfer_to_analyst`).
   - Mitigation: derive expected tool name from the DB fixture (assistant name + `normalize_agent_name`) inside the test.
 - Risk: tests become flaky if external plugin runtime is invoked.
-  - Mitigation: for A/C, avoid invoking real plugin tools; only use handoff tool (pure in-process).
+  - Mitigation: for A/C, patch tool loading to yield an empty tool list; only handoff tool remains (pure in-process).
+- Risk: checkpointer persistence can leak across tests.
+  - Mitigation: ensure tests use isolated checkpoint DB (either per-test temporary `paths.sqlite_path` or a patched/in-memory checkpointer in app state), and never share `threadId` across tests.
+- Risk: header alias mismatch (`X-Visitor-Id` vs `X-Visitor-ID`) introduces false failures.
+  - Mitigation: always use `X-Visitor-ID` (matches router alias) and keep new tests consistent with existing xfail notes in `tests/server/test_chat_api.py`.
 
 ## Follow-up (Scenario B)
 
 After A/C land, add B by patching `AssistantRuntime.load_tools` (like `scripts/performance.py`) to provide a deterministic tool that returns an artifact with `structured_content.display`, and assert that `DingMiddleware` produces `ActivityMessage` events that show up in SSE.
+
+## Scope Gate (A/C First)
+
+- The first implementation PR includes only A and C.
+- B is explicitly out of scope until A/C are stable; no additional artifact/tool plumbing is introduced beyond what is necessary to keep A/C deterministic.
