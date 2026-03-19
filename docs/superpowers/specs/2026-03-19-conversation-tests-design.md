@@ -86,16 +86,23 @@ Implementation detail: the engine supports resolving a distinct LLM per assistan
 
 To reduce flakiness, tests will prefer a per-assistant Fake LLM strategy:
 
-- Patch `get_llm_for_context` to return a resolver callable (or an object whose `__call__` resolves) that returns a dedicated Fake LLM instance per assistant.
+- Patch `get_llm_for_context` to return a resolver callable that returns a dedicated Fake LLM instance per assistant.
 - Each Fake LLM has its own response queue, eliminating cross-assistant call-order coupling.
 
-If the current runtime assumes `get_llm_for_context` returns a concrete `BaseChatModel` only, then we fall back to routing within a single Fake LLM instance.
+Important constraint in the current build path:
 
-- Option A (recommended): per-assistant Fake LLM via resolver (preferred).
-- Option B: a routing Fake LLM that selects responses by a stable marker in the prompt/messages (preferably the assistant system prompt text). It should also tolerate extra model calls by returning a safe default once expected replies are exhausted.
+- `create_assistant_graphs(...)` calls the resolver with an assistant id only if an `assistant_id_map` is provided.
+- The current API path (`threads.py` -> `CopilotKitSdk.resolve_agent` -> `GraphFactory.build`) does not pass an `assistant_id_map`, so a resolver will be called as `resolver(None)` for every assistant.
+
+Decision for A/C: do not plumb `assistant_id_map` yet. Use routing within a single Fake LLM instance as the primary strategy.
+
+If later we decide to plumb `assistant_id_map`, we can switch A/C to true per-assistant Fake LLM instances.
+
+- Option A (recommended for A/C): a routing Fake LLM that selects responses by a stable marker in the prompt/messages (preferably the assistant system prompt text). It should also tolerate extra model calls by returning a safe default once expected replies are exhausted.
+- Option B: per-assistant Fake LLM via resolver, but only after plumbing an `assistant_id_map` into the graph build path.
 - Option C (fallback): a pre-seeded response sequence that matches the expected call order, over-provisioned to handle extra calls.
 
-We will implement the per-assistant resolver first; if not compatible with the current build path, we fall back to routing or over-provisioned sequences.
+We will implement routing first for A/C; if it proves insufficient, fall back to over-provisioned sequences. Per-assistant resolution is a later enhancement if we decide to plumb `assistant_id_map`.
 
 ### Minimal Workflow Fixture (A/C)
 
@@ -208,7 +215,7 @@ This is intentionally tolerant to encoder changes while still catching regressio
 
 - Risk: the order of model calls differs between runs/versions, breaking response-sequence-based Fake model.
   - Mitigation: prefer per-assistant Fake LLM via resolver; otherwise use routing keyed on a stable system prompt marker.
-- Risk: tool name normalization mismatch (`transfer_to_Analyst` vs `transfer_to_analyst`).
+- Risk: tool name normalization mismatch (`transfer_to_<DestName>` vs `transfer_to_<dest_name>`).
   - Mitigation: derive expected tool name from the DB fixture (assistant name + `normalize_agent_name`) inside the test.
 - Risk: tests become flaky if external plugin runtime is invoked.
   - Mitigation: for A/C, avoid plugin-linked assistants entirely; additionally patch tool loading to yield an empty tool list; only handoff tool remains (pure in-process).
