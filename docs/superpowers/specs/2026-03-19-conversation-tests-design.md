@@ -76,13 +76,11 @@ We will use `FakeMessagesListChatModel` (LangChain) extended with `bind_tools` (
 
 For scenario C (handoff), the fake model for Agent A must emit an `AIMessage` with a tool call:
 
-- tool name: `transfer_to_<normalized-destination>`
-  - In the `single-cell` fixture, the destination assistant is `Analyst`.
-  - `normalize_agent_name` does not change `Analyst`, so tool should be `transfer_to_Analyst`.
+- tool name: `transfer_to_{normalize_agent_name(dest_name)}`
 
 Agent B then emits a normal assistant message (final response), e.g. containing a distinctive marker string.
 
-For scenario A (multi-turn), we can keep a single-agent workflow (fallback spec) OR reuse the same workflow but avoid handoff by returning plain assistant messages. To avoid DB setup complexity, we will reuse `mock_full_single_cell_data` but structure the Fake LLM responses so the first run produces an assistant answer without handoff; the second run produces a different assistant answer. (This keeps the API path consistent.)
+For scenario A (multi-turn), we will use the same minimal no-plugin workflow fixture described below (so that both `/run` and `/connect` are isolated from plugin/MCP side effects). The fake model responses will return distinct assistant messages per run.
 
 Implementation detail: the engine supports resolving a distinct LLM per assistant when `create_assistant_graphs(...)` is called with a callable resolver.
 
@@ -110,6 +108,12 @@ Proposed helper (new test utility; exact location decided during implementation)
   - `plugin_links=[]` / `plugins=[]` (no `AssistantPluginLink` rows).
 - Create a workflow with 2 nodes and an edge `AgentA -> AgentB` and `start_node=AgentA`.
 
+Handoff tool naming: expected tool name is always derived from the destination assistant name:
+
+- `transfer_to_{normalize_agent_name(dest_name)}`
+
+Tests must compute this at runtime (do not hardcode a specific assistant name).
+
 This replaces using `mock_full_single_cell_data` for A/C. The single-cell fixture remains useful for later scenario B (tool/artifact) where tool plumbing is intentionally exercised.
 
 ### Request Templates
@@ -133,6 +137,8 @@ Headers:
 
 - `Accept: text/event-stream`
 - guest mode: `X-Visitor-ID: <uuid>`
+
+`/connect` note: `/connect` also depends on `get_agent_context` (it rebuilds the agent), so the same isolation patches and headers apply as `/run`. Tests will send a minimal valid `RunAgentInput` body for `/connect` (same keys as above; `messages` can be an empty list).
 
 ## Test Layout
 
@@ -176,13 +182,13 @@ Steps:
 
 1) Create workspace + workflow with two assistants connected by an edge (A -> B), with no plugins.
 2) Patch `get_llm_for_context` to return Fake LLM responses in this sequence:
-   - First assistant call: `AIMessage(content="", tool_calls=[{"name": "transfer_to_Analyst", "args": {}, "id": "call_1"}])`
-   - Second assistant call: `AIMessage(content="FINAL_FROM_ANALYST")`
+   - First assistant call: `AIMessage(content="", tool_calls=[{"name": "<expected_handoff_tool>", "args": {}, "id": "call_1"}])`
+   - Second assistant call: `AIMessage(content="FINAL_FROM_AGENT_B")`
 3) POST `/run` with `threadId=T`, user message `"please analyze"`.
 4) Verify SSE contains (substring checks):
-   - the tool name `transfer_to_Analyst` (handoff requested)
-   - the tool result message `Transferred to Analyst` (from `create_handoff_tool`)
-   - the final marker `FINAL_FROM_ANALYST`
+   - the tool name `<expected_handoff_tool>` (handoff requested)
+   - the tool result message `Transferred to <dest_name>` (from `create_handoff_tool`)
+   - the final marker `FINAL_FROM_AGENT_B`
 
 Assertions (robust):
 
@@ -201,7 +207,7 @@ This is intentionally tolerant to encoder changes while still catching regressio
 ## Risks and Mitigations
 
 - Risk: the order of model calls differs between runs/versions, breaking response-sequence-based Fake model.
-  - Mitigation: introduce a routing Fake LLM keyed on prompt/system message or active agent name.
+  - Mitigation: prefer per-assistant Fake LLM via resolver; otherwise use routing keyed on a stable system prompt marker.
 - Risk: tool name normalization mismatch (`transfer_to_Analyst` vs `transfer_to_analyst`).
   - Mitigation: derive expected tool name from the DB fixture (assistant name + `normalize_agent_name`) inside the test.
 - Risk: tests become flaky if external plugin runtime is invoked.
