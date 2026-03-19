@@ -60,6 +60,8 @@ Write API-level integration tests that:
 3) Patch tool loading to avoid external MCP/plugin side effects.
    - For A/C, patch `dingent.core.assistants.assistant.AssistantRuntime.load_tools` to yield an empty list (no external tools).
    - Additionally, add a guard patch so that if plugin runtime creation is accidentally triggered, the test fails fast (e.g., patch `dingent.core.plugins.plugin_manager.PluginManager.get_or_create_runtime` to raise in A/C tests).
+
+Note on handoff tools: handoff tools are created from the workflow adjacency map (not from plugin tool loading) and are still present even if `AssistantRuntime.load_tools` is patched to yield `[]`.
 3) Call `/api/v1/{ws.slug}/chat/agent/{workflow_name}/run` via `fastapi.testclient.TestClient`.
 4) Parse the returned SSE payload as plain text and assert presence of key event fragments.
 5) For multi-turn: re-run with the same `threadId` and validate persistence by calling `/connect` and reading its message snapshot.
@@ -84,17 +86,12 @@ For scenario A (multi-turn), we will use the same minimal no-plugin workflow fix
 
 Implementation detail: the engine supports resolving a distinct LLM per assistant when `create_assistant_graphs(...)` is called with a callable resolver.
 
-To reduce flakiness, tests will prefer a per-assistant Fake LLM strategy:
-
-- Patch `get_llm_for_context` to return a resolver callable that returns a dedicated Fake LLM instance per assistant.
-- Each Fake LLM has its own response queue, eliminating cross-assistant call-order coupling.
-
 Important constraint in the current build path:
 
 - `create_assistant_graphs(...)` calls the resolver with an assistant id only if an `assistant_id_map` is provided.
 - The current API path (`threads.py` -> `CopilotKitSdk.resolve_agent` -> `GraphFactory.build`) does not pass an `assistant_id_map`, so a resolver will be called as `resolver(None)` for every assistant.
 
-Decision for A/C: do not plumb `assistant_id_map` yet. Use routing within a single Fake LLM instance as the primary strategy.
+Decision for A/C: do not plumb `assistant_id_map` yet. Use routing within a single Fake LLM instance as the primary determinism strategy.
 
 If later we decide to plumb `assistant_id_map`, we can switch A/C to true per-assistant Fake LLM instances.
 
@@ -168,9 +165,9 @@ Test: `test_run_multi_turn_persists_messages_and_connect_snapshots`
 Steps:
 
 1) Create workspace + workflow records (minimal, no plugins).
-2) Patch `get_llm_for_context` to return Fake LLM with responses:
-   - Run 1: `AIMessage(content="A1")`
-   - Run 2: `AIMessage(content="A2")`
+2) Patch `get_llm_for_context` to return a routing Fake LLM:
+   - If the latest user message contains `"hello"`, return `AIMessage(content="A1")`.
+   - If the latest user message contains `"follow up"`, return `AIMessage(content="A2")`.
 3) POST `/run` with `threadId=T`, message `"hello"`, verify HTTP 200 and SSE contains `A1`.
 4) POST `/run` again with same `threadId=T`, new user message `"follow up"`, verify SSE contains `A2`.
 5) POST `/connect` with same `threadId=T` and `runId=...`, verify snapshot contains both user messages and both assistant messages in order (at least as substrings).
@@ -188,9 +185,9 @@ Test: `test_run_handoff_transfers_to_second_agent_and_returns_final_answer`
 Steps:
 
 1) Create workspace + workflow with two assistants connected by an edge (A -> B), with no plugins.
-2) Patch `get_llm_for_context` to return Fake LLM responses in this sequence:
-   - First assistant call: `AIMessage(content="", tool_calls=[{"name": "<expected_handoff_tool>", "args": {}, "id": "call_1"}])`
-   - Second assistant call: `AIMessage(content="FINAL_FROM_AGENT_B")`
+2) Patch `get_llm_for_context` to return a routing Fake LLM:
+   - When the prompt/messages indicate Agent A (via the unique system prompt marker), return an `AIMessage` with a tool call to `<expected_handoff_tool>`.
+   - When the prompt/messages indicate Agent B, return `AIMessage(content="FINAL_FROM_AGENT_B")`.
 3) POST `/run` with `threadId=T`, user message `"please analyze"`.
 4) Verify SSE contains (substring checks):
    - the tool name `<expected_handoff_tool>` (handoff requested)
@@ -214,7 +211,7 @@ This is intentionally tolerant to encoder changes while still catching regressio
 ## Risks and Mitigations
 
 - Risk: the order of model calls differs between runs/versions, breaking response-sequence-based Fake model.
-  - Mitigation: prefer per-assistant Fake LLM via resolver; otherwise use routing keyed on a stable system prompt marker.
+  - Mitigation: use routing keyed on stable markers (system prompt + latest user message); tolerate extra calls by returning a safe default.
 - Risk: tool name normalization mismatch (`transfer_to_<DestName>` vs `transfer_to_<dest_name>`).
   - Mitigation: derive expected tool name from the DB fixture (assistant name + `normalize_agent_name`) inside the test.
 - Risk: tests become flaky if external plugin runtime is invoked.
