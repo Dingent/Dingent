@@ -250,7 +250,7 @@ class DingMiddleware(AgentMiddleware):
     ) -> ModelCallResult:
         all_messages = request.messages
         filtered_messages: list[AnyMessage] = [msg for msg in all_messages if isinstance(msg, (SystemMessage, HumanMessage, AIMessage, ToolMessage))]
-        request.messages = filtered_messages
+        request = request.override(messages=filtered_messages)
         result = await handler(request)
 
         return result
@@ -305,14 +305,8 @@ class DingMiddleware(AgentMiddleware):
 
             # --- 分支 B: 处理 Command ---
             elif isinstance(result, Command):
-                # 如果是 Graph 更新，追加历史消息逻辑
-                if result.graph:
-                    history_messages = request.state.get("messages", [])
-                    # 确保 update 中有 messages 且不为空
-                    new_msgs = result.update.get("messages")
-                    if new_msgs:
-                        history_messages.append(new_msgs[-1])
-                        result.update["messages"] = history_messages
+                # 如果是 Graph 更新，不需要追加全部历史消息，LangGraph 的 add_messages reducer 会自动处理追加。
+                # 之前在这里直接使用 append 会导致 state 原地突变并在多轮对话中引起无限复制消息的问题。
                 return result
 
             else:
