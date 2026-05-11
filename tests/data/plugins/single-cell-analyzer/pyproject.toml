@@ -1,0 +1,15 @@
+[project]
+name = "single-cell-analyzer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "anndata>=0.12.9",
+    "fastmcp>=2.14.5",
+    "leidenalg>=0.11.0",
+    "matplotlib>=3.10.8",
+    "pandas>=2.3.3",
+    "scanpy>=1.12",
+    "seaborn>=0.13.2",
+]

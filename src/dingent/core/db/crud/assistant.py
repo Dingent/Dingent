@@ -148,12 +148,10 @@ def update_assistant(
     """
     逻辑基本保持不变。
     """
-    # 1. 更新 Assistant 基础字段
     update_data = assistant_in.model_dump(exclude={"plugins"}, exclude_unset=True)
     for k, v in update_data.items():
         setattr(db_assistant, k, v)
 
-    # 2. 更新 Plugins 配置 (复用你原本的优秀逻辑)
     if assistant_in.plugins:
         # 建立索引：plugin_registry_id -> link 对象
         link_by_registry_id: dict[str, AssistantPluginLink] = {link.plugin.registry_id: link for link in db_assistant.plugin_links}
@@ -188,6 +186,10 @@ def update_assistant(
                         raise HTTPException(status_code=400, detail=f"Plugin '{plugin_cfg.registry_id}' configuration error: {e.message}")
 
                 link.user_plugin_config = merged_conf
+            if "tool_configs" in plugin_update_data:
+                new_tool_confs = plugin_update_data["tool_configs"] or []
+
+                link.tool_configs = new_tool_confs
 
     db.add(db_assistant)
     db.commit()

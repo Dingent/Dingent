@@ -1,22 +1,28 @@
 import json
-from typing import Any
+from typing import Annotated, Any, Awaitable, Sequence, cast, override
+from langchain.agents import AgentState, create_agent
 
-from langchain.chat_models.base import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+
+from langchain.agents.middleware.todo import WRITE_TODOS_SYSTEM_PROMPT, WRITE_TODOS_TOOL_DESCRIPTION, Todo
+from langchain.agents.middleware.types import ModelCallResult, ToolCallRequest
+from langchain.tools import BaseTool, InjectedToolCallId, tool
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
-from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph, RunnableConfig
-from langgraph.types import Command
+from langgraph.types import Checkpointer, Command
 
 from .messages import ActivityMessage
-from .state import SimpleAgentState
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, TodoListMiddleware
+from langchain.agents import create_agent
+from typing import Any, Callable
 
 
 def mcp_artifact_to_agui_display(tool_name, query_args: dict, surface_base_id: str | list[str], artifact: list[dict[str, Any]], update_data=False) -> dict[str, list[dict]]:
     if not isinstance(artifact, list):
         return [artifact]
     else:
-        return artifact
+        return cast(Any, artifact)
     agui_display = {"operations": []}
 
     if isinstance(surface_base_id, list):
@@ -236,215 +242,135 @@ def _transform_rows_to_a2ui(columns: list[str], rows: list[list[str | int | Any]
     return a2ui_list
 
 
+class DingMiddleware(AgentMiddleware):
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelCallResult:
+        all_messages = request.messages
+        filtered_messages: list[AnyMessage] = [msg for msg in all_messages if isinstance(msg, (SystemMessage, HumanMessage, AIMessage, ToolMessage))]
+        request = request.override(messages=filtered_messages)
+        result = await handler(request)
+
+        return result
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        tool_call = request.tool_call
+        tool_call_id = tool_call.get("id") or "unknown_tool_call_id"
+        tool_name = request.tool.name
+
+        try:
+            result = await handler(request)
+
+            # --- 分支 A: 处理 ToolMessage ---
+            if isinstance(result, ToolMessage):
+                content = result.content
+                artifact = None
+                data = {}
+                if result.artifact:
+                    structured_content = result.artifact["structured_content"]
+                    if isinstance(structured_content, dict):
+                        data = structured_content
+                    elif isinstance(structured_content, str) and structured_content.strip():
+                        try:
+                            data = json.loads(structured_content)
+                        except json.JSONDecodeError:
+                            pass  # 保持默认的 model_text
+
+                if isinstance(data, dict) and "display" in data:
+                    artifact = cast(dict[str, list[dict]], data.get("display"))
+                    model_text = data.get("model_text", content)
+                else:
+                    model_text = content
+
+                # 构建消息列表
+                collected_messages: list = [ToolMessage(content=model_text, tool_call_id=tool_call_id, artifact=artifact)]
+
+                # 如果有 artifact，生成 ActivityMessage
+                if artifact:
+                    agui_display = mcp_artifact_to_agui_display(
+                        tool_name=tool_name,
+                        query_args=tool_call.get("args", {}),
+                        surface_base_id=tool_call_id,
+                        artifact=artifact,
+                    )
+                    collected_messages.append(ActivityMessage(content=agui_display))
+
+                return Command(update={"messages": collected_messages})
+
+            # --- 分支 B: 处理 Command ---
+            elif isinstance(result, Command):
+                # 如果是 Graph 更新，不需要追加全部历史消息，LangGraph 的 add_messages reducer 会自动处理追加。
+                # 之前在这里直接使用 append 会导致 state 原地突变并在多轮对话中引起无限复制消息的问题。
+                return result
+
+            else:
+                raise ValueError(f"Unsupported result type: {type(result)}")
+
+        except Exception as e:
+            raise e
+            return Command(update={"messages": [ToolMessage(content=f"Execution Error: {str(e)}", tool_call_id=tool_call_id, is_error=True)]})
+
+
+class JsonTodoListMiddleware(TodoListMiddleware):
+    """
+    A subclass of TodoListMiddleware that ensures the `write_todos` tool
+    returns a valid JSON string result, fixing frontend parsing issues.
+    """
+
+    def __init__(
+        self,
+        *,
+        system_prompt: str = WRITE_TODOS_SYSTEM_PROMPT,
+        tool_description: str = WRITE_TODOS_TOOL_DESCRIPTION,
+    ) -> None:
+        # 初始化父类
+        super().__init__(system_prompt=system_prompt, tool_description=tool_description)
+
+        # 重新定义 write_todos 工具，覆盖父类的实现
+        @tool(description=self.tool_description)
+        def write_todos(todos: list[Todo], tool_call_id: Annotated[str, InjectedToolCallId]) -> Command[Any]:
+            """Create and manage a structured task list for your current work session."""
+
+            return Command(
+                update={
+                    "todos": todos,
+                    "messages": [
+                        ToolMessage(
+                            f"Updated todo list to {todos}",
+                            tool_call_id=tool_call_id,
+                            name="write_todos",
+                        )
+                    ],
+                }
+            )
+
+        # 将覆盖后的工具赋值给 self.tools
+        self.tools = [write_todos]
+
+
+middleware = [DingMiddleware(), JsonTodoListMiddleware()]
+
+
 def build_simple_react_agent(
     name: str,
     llm: BaseChatModel,
-    tools: list[StructuredTool],
+    tools: list[BaseTool],
     system_prompt: str | None = None,
     max_iterations: int = 6,
-    stop_when_no_tool: bool = True,
 ) -> CompiledStateGraph:
-    name_to_tool = {t.name: t for t in tools}
-    LLM_SAFE_TYPES = (SystemMessage, HumanMessage, AIMessage, ToolMessage)
-
-    async def model_node(state: SimpleAgentState) -> dict[str, Any]:
-        iteration = state.get("iteration", 0)
-        # 简单的循环保护
-        if iteration >= max_iterations:
-            return {"messages": [AIMessage(content="Max iterations reached.")]}
-
-        all_messages = state.get("messages", [])
-        filtered_messages = [msg for msg in all_messages if isinstance(msg, LLM_SAFE_TYPES)]
-
-        if system_prompt:
-            input_messages = [SystemMessage(content=system_prompt)] + filtered_messages
-        else:
-            input_messages = filtered_messages
-
-        print(f"[Agent: {name}] Invoking model with messages: {input_messages}")
-        response = await llm.bind_tools(tools).ainvoke(input_messages)
-        print(f"[Agent: {name}] Model Response: {response}")
-
-        return {
-            "messages": [response],
-            "iteration": iteration + 1,
-        }
-
-    async def tools_node(state: SimpleAgentState, config: RunnableConfig) -> Command:
-        last_msg = state.get("messages", [])[-1]
-        if not isinstance(last_msg, AIMessage) or not last_msg.tool_calls:
-            return Command(update={})
-
-        # 获取插件配置
-        plugin_configs = config.get("configurable", {}).get("assistant_plugin_configs", {})
-
-        # 用于收集本轮循环中产生的"普通"消息（非 Handoff）
-        collected_messages: list[BaseMessage] = []
-
-        for tc in last_msg.tool_calls:
-            tool_name = tc["name"]
-            # FIXME:
-            # 这里应该用plugin name而不是tool name
-            tool = name_to_tool.get(tool_name)
-
-            # 1. 处理工具不存在的情况
-            if not tool:
-                collected_messages.append(ToolMessage(content=f"Error: Tool '{tool_name}' not found.", tool_call_id=tc["id"], is_error=True))
-                continue
-
-            # 2. 注入配置参数
-            args = tc.get("args", {}).copy()
-            if tool.tags and (plugin_name := tool.tags[0]):
-                if cfg := plugin_configs.get(plugin_name):
-                    if len(cfg.get("config", {})) > 0:
-                        args["plugin_config"] = cfg.get("config")
-
-            try:
-                # 3. 执行工具
-                result = await tool.ainvoke(
-                    {
-                        "id": tc["id"],
-                        "name": tool_name,
-                        "args": args,
-                        "tool_call_id": tc["id"],
-                        "type": "tool_call",
-                    }
-                )
-
-                if not isinstance(result, Command):
-                    raise ValueError(f"Tool {tool_name} did not return a Command object.")
-
-                if result.graph:
-                    # 1. 获取当前所有的历史消息
-                    all_current_messages: list = list(state.get("messages", []))
-
-                    all_current_messages.extend(collected_messages)
-
-                    handoff_tool_msgs = result.update.get("messages", [])
-                    all_current_messages.extend(handoff_tool_msgs)
-
-                    return Command(
-                        goto=result.goto,
-                        graph=result.graph,
-                        update={
-                            "messages": all_current_messages,
-                        },
-                    )
-
-                else:
-                    raw_updates = result.update.get("messages", [])
-                    for msg in raw_updates:
-                        if msg.type == "tool":
-                            # 处理 MCP Artifacts
-                            artifact = getattr(msg, "artifact", None)
-                            if not artifact:
-                                collected_messages.append(msg)
-                                continue
-
-                            # 生成 AGUI Display
-                            agui_display = mcp_artifact_to_agui_display(
-                                tool_name=tool_name,
-                                query_args=tc.get("args", {}),
-                                surface_base_id=msg.tool_call_id,
-                                artifact=artifact,
-                            )
-                            collected_messages.append(msg)
-                            collected_messages.append(ActivityMessage(content=agui_display))
-                        else:
-                            # 非 ToolMessage 直接添加 (例如额外的 AIMessage)
-                            collected_messages.append(msg)
-
-            except Exception as e:
-                collected_messages.append(ToolMessage(content=f"Execution Error: {str(e)}", tool_call_id=tc["id"], is_error=True))
-
-        # 循环结束，没有触发 Handoff，返回本轮所有工具的增量更新
-        return Command(
-            update={
-                "messages": collected_messages,
-            }
-        )
-
-    def route_after_model(state: SimpleAgentState):
-        messages = state.get("messages", [])
-        if not messages:
-            return END
-
-        last_msg = messages[-1]
-        has_tool_calls = isinstance(last_msg, AIMessage) and bool(last_msg.tool_calls)
-
-        if has_tool_calls and state.get("iteration", 0) <= max_iterations:
-            return "tools"
-
-        if stop_when_no_tool or not has_tool_calls:
-            return END
-
-        return END
-
-    async def ui_node(state: SimpleAgentState) -> Command:
-        action = state.get("a2ui_action", {})
-        user_action = action.get("userAction", {})
-        if not user_action:
-            raise ValueError("No user_action found in a2ui_action")
-
-        tool_name = user_action.get("name")
-        if tool_name and tool_name in name_to_tool:
-            tool = name_to_tool[tool_name]
-            context = user_action.get("context", {})
-            surface_id = context.get("surfaceId", "")
-            surface_base_id = "-".join(surface_id.split("-")[:-1])
-            query_args = json.loads(context.get("query_args", "{}"))
-            # FIXME: query_args还要加上工具的配置参数
-            result = await tool.ainvoke(
-                {
-                    "id": "agui_action",
-                    "name": tool_name,
-                    "args": query_args,
-                    "tool_call_id": "agui_action",
-                    "type": "tool_call",
-                }
-            )
-            tool_message = result.update.get("messages", [])[0]
-            artifact = tool_message.artifact
-            if artifact:
-                agui_display = mcp_artifact_to_agui_display(
-                    tool_name,
-                    query_args,
-                    surface_base_id=surface_base_id,
-                    artifact=artifact,
-                    update_data=True,
-                )
-                return Command(
-                    update={
-                        "messages": [
-                            tool_message,
-                            ActivityMessage(content=[agui_display]),
-                        ]
-                    },
-                    goto=END,
-                )
-
-        return Command(goto="model")
-
-    def route_entry(state: SimpleAgentState):
-        # 如果状态中有 UI 动作，优先进入 UI 处理节点
-        if state.get("a2ui_action"):
-            return "ui_handler"
-        return "model"
-
-    workflow = StateGraph(SimpleAgentState)
-    workflow.add_node("model", model_node)
-    workflow.add_node("tools", tools_node)
-    workflow.add_node("ui_handler", ui_node)
-    workflow.set_conditional_entry_point(
-        route_entry,
-        {
-            "ui_handler": "ui_handler",
-            "model": "model",
-        },
+    # 使用 create_react_agent 并传入 middleware
+    agent = create_agent(
+        model=llm,
+        tools=tools,
+        system_prompt=system_prompt,
+        middleware=middleware,
+        debug=True,
     )
-    workflow.add_conditional_edges("model", route_after_model)
-    workflow.add_edge("tools", "model")
-
-    compiled = workflow.compile()
-    compiled.name = name
-    return compiled
+    agent.name = name
+    return agent

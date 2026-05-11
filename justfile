@@ -29,7 +29,7 @@ install:
     @echo "Installing all monorepo dependencies..."
     @bun install --frozen-lockfile
 
-build:
+_build-ui:
     @echo "Building Frontend (Standalone)..."
     @(cd ui/ && bun install && bun run build)
 
@@ -108,8 +108,11 @@ package:
     @ls -lh build/runtime.tar.gz
     @echo "🚀 Ready for deployment!"
 
-build-ui: build assemble get-node prune package
+build-ui: _build-ui assemble get-node prune package
     @echo "🎉 Frontend application built, prepared, and packaged."
 
 build-exe:
   pyinstaller dingent.spec
+
+build: build-ui build-exe
+    @echo "🎉 Full application built and packaged."

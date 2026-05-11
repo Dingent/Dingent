@@ -26,7 +26,7 @@ function CopilotKitContent({
   const activityRenderers = useMemo(() => {
     return [createA2UIMessageRenderer({ theme })];
   }, []);
-  const runtimeUrl = `/api/v1/${slug}/chat`;
+  const runtimeUrl = `/dingent/web/api/v1/${slug}/chat`;
   const storedVisitorId = useAuthStore((state) => state.visitorId);
   useEffect(() => {
     if (isGuest && !storedVisitorId) {

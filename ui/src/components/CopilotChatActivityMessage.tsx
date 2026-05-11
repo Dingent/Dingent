@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { ActivityMessage } from "@ag-ui/core";
 import { twMerge } from "tailwind-merge";
 import { useRenderActivityMessage } from "@copilotkit/react-core/v2";
@@ -50,18 +50,52 @@ export function CopilotChatActivityList({
 }: CopilotChatActivityListProps) {
   // 获取渲染逻辑的 Hook
   const renderActivityMessage = useRenderActivityMessage();
+  const visibleMessages = useMemo(() => {
+    if (!messages || messages.length === 0) return [];
 
-  // 如果没有渲染函数或数组为空，不渲染任何内容
-  if (!renderActivityMessage || !messages || messages.length === 0) {
+    let lastTodoListIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const content = messages[i].content as any;
+      if (
+        content &&
+        typeof content === "object" &&
+        content.type === "todo_list"
+      ) {
+        lastTodoListIndex = i;
+        break; // 找到了最后一个，停止循环
+      }
+    }
+
+    return messages.filter((msg, index) => {
+      const content = msg.content as any;
+
+      const isTodoList =
+        content && typeof content === "object" && content.type === "todo_list";
+
+      if (isTodoList) {
+        return index === lastTodoListIndex;
+      }
+
+      return true;
+    });
+  }, [messages]);
+
+  if (
+    !renderActivityMessage ||
+    !visibleMessages ||
+    visibleMessages.length === 0
+  ) {
     return null;
   }
+  // 使用 useMemo 计算最终需要显示的列表
+  // 逻辑：保留所有非 'todo_list' 的消息，但对于 'todo_list'，只保留数组中出现的最后一个
 
   return (
     <div className={twMerge("flex flex-col gap-2", className)} {...props}>
-      {messages.map((message) => (
+      {visibleMessages.map((visibleMessages) => (
         <MemoizedActivityMessage
-          key={message.id}
-          message={message}
+          key={visibleMessages.id}
+          message={visibleMessages}
           renderActivityMessage={renderActivityMessage}
         />
       ))}

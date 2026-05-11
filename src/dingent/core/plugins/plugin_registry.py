@@ -64,9 +64,9 @@ class PluginRegistry:
                 continue
 
             try:
-                manifest = PluginManifest.from_toml(toml_path)
+                mainfest = PluginManifest.from_toml(toml_path)
                 # 简单防重：后发现的同 ID 会覆盖先前同 ID
-                new_index[manifest.id] = manifest
+                new_index[mainfest.id] = mainfest
             except Exception as e:
                 self.log_manager.log_with_context(
                     "error",

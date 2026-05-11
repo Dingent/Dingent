@@ -210,3 +210,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 src/dingent/static
+/bio_workspace
+/data
+/.devenv

@@ -27,9 +27,8 @@ async def _build_plugin_read(plugin_link: AssistantPluginLink, runtime_plugin: P
                 tool_config = db_tool_configs.get(tool.name, {})
                 merged_tool = ToolConfigItemRead(
                     name=tool.name,
-                    # 默认启用，除非明确被禁用
                     enabled=tool_config.get("enabled", True),
-                    description=tool.description,
+                    description=tool_config.get("description", tool.description),
                 )
                 merged_tools.append(merged_tool)
 
@@ -122,6 +121,7 @@ async def _build_assistant_read(assistant: Assistant, runtime_assistant: Assista
         id=str(assistant.id),
         name=assistant.name,
         description=assistant.description or "No description",
+        instructions=assistant.instructions,
         status=assistant_status,
         plugins=plugins_read_list,
         version=assistant.version,

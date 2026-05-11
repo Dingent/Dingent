@@ -162,6 +162,7 @@ class AssistantPluginLink(SQLModel, table=True):
             plugin_id=self.plugin.registry_id,
             registry_id=self.plugin.registry_id,
             config=self.user_plugin_config or {},
+            tool_configs=self.tool_configs,
         )
 
 
@@ -175,6 +176,7 @@ class Assistant(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     name: str = Field(index=True)
     description: str | None = None
+    instructions: str | None = Field(default=None, sa_column=Column(Text))
     version: str = "0.2.0"
     spec_version: str = "3.0"
     enabled: bool = True
@@ -208,6 +210,7 @@ class Assistant(SQLModel, table=True):
             id=self.id,
             name=normalize_agent_name(self.name),
             description=self.description or "",
+            instructions=self.instructions or "",
             plugins=[pl.to_spec() for pl in self.plugin_links],
         )
 
@@ -272,7 +275,9 @@ class Workflow(SQLModel, table=True):
         assert start_node is not None, "Workflow must have a start node."
         adjacency_map = defaultdict(list)
         for edge in self.edges:
-            adjacency_map[edge.source_node.name].append(edge.target_node.name)
+            src_name = normalize_agent_name(edge.source_node.name)
+            tgt_name = normalize_agent_name(edge.target_node.name)
+            adjacency_map[src_name].append(tgt_name)
 
         return ExecutableWorkflow(
             id=self.id,
@@ -359,7 +364,7 @@ class Resource(SQLModel, table=True):
 class LLMModelConfig(SQLModel, table=True):
     """
     统一的模型配置表。
-    每一行代表一个可供 Agent 调用的模型实例（例如 "我的本地 Llama3" 或 "公司的 GPT-4"）。
+    每一行代表一个可供 Agent 调用的模型实例
     设计上完全对齐 LiteLLM 的参数需求。
     """
 
@@ -367,7 +372,6 @@ class LLMModelConfig(SQLModel, table=True):
 
     # 归属权：模型配置通常属于一个工作空间，供空间内的成员共享使用
     workspace_id: UUID = Field(foreign_key="workspace.id", index=True)
-    workspace: Workspace = Relationship(back_populates="model_configs")
 
     # 基础信息
     name: str = Field(description="用户给这个配置起的别名，如 'My Local Llama'")

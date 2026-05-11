@@ -6,10 +6,12 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
+from langchain_core.callbacks import AsyncCallbackHandler
+
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.state import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph, RunnableConfig
 from langgraph_swarm import create_swarm
 
 from dingent.core.assistants.assistant_factory import AssistantFactory
@@ -85,7 +87,6 @@ class GraphFactory:
             raise ValueError(f"Start node '{default_active}' not found in generated assistants: {list(assistants_map.keys())}")
 
         # 3. 组装 Swarm
-        # create_swarm 返回的是一个未编译的 StateGraph
         swarm_workflow = create_swarm(
             agents=list(assistants_map.values()),
             state_schema=MainState,
@@ -124,10 +125,11 @@ class GraphFactory:
         这防止了单个 Agent 的崩溃导致整个应用程序崩溃。
         """
 
-        async def safe_swarm_runner(state: MainState):
+        async def safe_swarm_runner(state: MainState, config: RunnableConfig):
             try:
-                # 运行内部的 Swarm 图
-                return await compiled_swarm.ainvoke(state)
+                # HACK:
+                config["recursion_limit"] = 1000
+                return await compiled_swarm.ainvoke(state, config=config)
             except Exception as e:
                 import traceback
 
@@ -135,11 +137,10 @@ class GraphFactory:
                 print("捕获到的错误信息：\n", error_msg)
                 error_type = type(e).__name__
                 error_msg = f"Critical Swarm Error: {error_type}: {str(e)}"
+                traceback.print_tb(e.__traceback__)
 
                 log_method("error", "Swarm execution failed: {error_msg}", context={"error_type": error_type, "error": str(e)})
 
-                # 尝试恢复基本状态，防止状态丢失
-                # 这里的逻辑是：如果 Swarm 挂了，至少返回用户一条错误消息
                 messages = state.get("messages", [])
                 error_message = AIMessage(
                     content=f"I encountered a system error and could not complete the request.\n\nDetails: {error_msg}", additional_kwargs={"error": True, "error_type": error_type}

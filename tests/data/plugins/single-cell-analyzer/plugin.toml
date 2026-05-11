@@ -1,0 +1,17 @@
+[plugin]
+id = "Single-Cell-Analyzer"
+display_name = "Single Cell Analyzer"
+version = "1.0.0"
+spec_version = 2.0
+description = ""
+
+[plugin.server]
+transport = "stdio"
+command = "uv"
+args = [
+    "run",
+    "main.py",
+    "--verbose"
+]
+
+

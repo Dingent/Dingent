@@ -1,12 +1,23 @@
 import json
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import asdict, is_dataclass
+from enum import Enum
+from typing import Any
 
 import ag_ui_langgraph
 import ag_ui_langgraph.utils
-from ag_ui.core import ActivityMessage, CustomEvent, EventType, MessagesSnapshotEvent, RunAgentInput, RunFinishedEvent
+from ag_ui.core import (
+    ActivityMessage,
+    CustomEvent,
+    EventType,
+    MessagesSnapshotEvent,
+    RunAgentInput,
+    RunFinishedEvent,
+)
 from ag_ui.core.events import RunStartedEvent
-from ag_ui_langgraph.agent import Command, dump_json_safe, get_stream_payload_input
+from ag_ui_langgraph.agent import Command, dump_json_safe, get_stream_payload_input, normalize_tool_content
+from ag_ui_langgraph.types import LangGraphReasoning
 from ag_ui_langgraph.utils import (
     AGUIAssistantMessage,
     AGUIFunctionCall,
@@ -22,7 +33,7 @@ from ag_ui_langgraph.utils import (
     stringify_if_needed,
 )
 from copilotkit import LangGraphAGUIAgent
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from dingent.engine.agents import messages as DingMessages
 
@@ -31,8 +42,61 @@ class DingRunAgentInput(RunAgentInput):
     owner_id: uuid.UUID
 
 
+def ding_resolve_reasoning_content(chunk: AIMessageChunk | AIMessage) -> LangGraphReasoning | None:
+    # -----------------------------------------------------------
+    # 1. 优先检查 additional_kwargs
+    # (Gemini, DeepSeek, OpenAI o1/o3 通常在这里)
+    # -----------------------------------------------------------
+    if hasattr(chunk, "additional_kwargs"):
+        kwargs = chunk.additional_kwargs
+
+        # 定义可能的推理字段名列表
+        # 'reasoning_content': DeepSeek R1, 这里的 Gemini 适配器通常也用这个
+        # 'reasoning': 某些版本的 OpenAI 适配器
+        # 'thinking': 某些自定义适配器
+        possible_keys = ["reasoning_content", "reasoning", "thinking"]
+
+        for key in possible_keys:
+            val = kwargs.get(key)
+            if val:
+                # OpenAI 有时会嵌套在字典里: {"summary": [{"text": "..."}]}
+                if isinstance(val, dict):
+                    summary = val.get("summary", [])
+                    if summary and isinstance(summary, list):
+                        data = summary[0]
+                        if data and data.get("text"):
+                            return LangGraphReasoning(type="text", text=data["text"], index=data.get("index", 0))
+                # Gemini / DeepSeek 通常直接就是字符串
+                elif isinstance(val, str) and val.strip():
+                    return LangGraphReasoning(
+                        type="text",
+                        text=val,
+                        index=0,  # 流式通常没有 index，默认为 0
+                    )
+
+    content = chunk.content
+    # Anthropic reasoning response
+    if isinstance(content, list) and content and content[0]:
+        if not content[0].get("thinking"):
+            return None
+        return LangGraphReasoning(text=content[0]["thinking"], type="text", index=content[0].get("index", 0))
+
+    # OpenAI reasoning response
+    if hasattr(chunk, "additional_kwargs"):
+        reasoning = chunk.additional_kwargs.get("reasoning", {})
+        summary = reasoning.get("summary", [])
+        if summary:
+            data = summary[0]
+            if not data or not data.get("text"):
+                return None
+            return LangGraphReasoning(type="text", text=data["text"], index=data.get("index", 0))
+
+    return None
+
+
 def ding_langchain_messages_to_agui(messages: list[BaseMessage]):
     agui_messages: list[AGUIMessage] = []
+    thinking_content = ""
     for message in messages:
         if isinstance(message, ToolMessage):
             agui_messages.append(
@@ -70,6 +134,7 @@ def ding_langchain_messages_to_agui(messages: list[BaseMessage]):
                 )
             )
         elif isinstance(message, AIMessage):
+            reasoning = ding_resolve_reasoning_content(message)
             tool_calls = None
             if message.tool_calls:
                 tool_calls = [
@@ -84,11 +149,19 @@ def ding_langchain_messages_to_agui(messages: list[BaseMessage]):
                     for tc in message.tool_calls
                 ]
 
+            thinking_content_chunk = reasoning.get("text", "") if reasoning else ""
+            thinking_content += f"\n{thinking_content_chunk}"
+            message_content = stringify_if_needed(resolve_message_content(message.content))
+
+            if message_content:
+                message_content = f"<thinking>{thinking_content}</thinking>\n{message_content}"
+                thinking_content = ""
+
             agui_messages.append(
                 AGUIAssistantMessage(
                     id=str(message.id),
                     role="assistant",
-                    content=stringify_if_needed(resolve_message_content(message.content)),
+                    content=message_content,
                     tool_calls=tool_calls,
                     name=message.name,
                 )
@@ -176,8 +249,99 @@ def ding_agui_messages_to_langchain(messages: list[AGUIMessage]) -> list[BaseMes
     return langchain_messages
 
 
+def ding_make_json_safe(value: Any, _seen: set[int] | None = None) -> Any:
+    """
+    Convert `value` into something that `json.dumps` can always handle.
+    Includes a blacklist to prevent traversing into dangerous LangGraph internal objects.
+    """
+    if _seen is None:
+        _seen = set()
+
+    obj_id = id(value)
+    if obj_id in _seen:
+        return "<recursive>"
+
+    # --- 0. Blocklist for dangerous keys ---------------------------------------
+    # 这些 key 通常包含不可序列化的运行时对象（如数据库连接、回调管理器）
+    # 在遍历字典时，如果遇到这些 key，直接跳过其内容的递归
+    UNSAFE_KEYS = {"runtime", "config", "configurable", "callbacks", "__pregel_runtime", "__pregel_task_id", "stream_writer", "store"}
+
+    # --- 1. Primitives -----------------------------------------------------
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+
+    # --- 2. Enum → use underlying value -----------------------------------
+    if isinstance(value, Enum):
+        return ding_make_json_safe(value.value, _seen)
+
+    # --- 3. Dicts (CRITICAL FIX HERE) --------------------------------------
+    if isinstance(value, dict):
+        _seen.add(obj_id)
+        safe_dict = {}
+        for k, v in value.items():
+            # 检查 key 是否在黑名单中，或者是内部私有属性（以 __pregel 开头）
+            str_k = str(k)
+            if str_k in UNSAFE_KEYS or str_k.startswith("__pregel_"):
+                # 仅保留占位符，不再递归进入 v
+                safe_dict[ding_make_json_safe(k, _seen)] = f"<Filtered: {str_k}>"
+            else:
+                safe_dict[ding_make_json_safe(k, _seen)] = ding_make_json_safe(v, _seen)
+        return safe_dict
+
+    # --- 4. Iterable containers -------------------------------------------
+    if isinstance(value, (list, tuple, set, frozenset)):
+        _seen.add(obj_id)
+        return [ding_make_json_safe(v, _seen) for v in value]
+
+    # --- 5. Dataclasses ----------------------------------------------------
+    if is_dataclass(value):
+        _seen.add(obj_id)
+        return ding_make_json_safe(asdict(value), _seen)
+
+    # --- 6. Pydantic-like models (v2: model_dump) -------------------------
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        _seen.add(obj_id)
+        try:
+            # model_dump 返回字典，递归调用会进入上方的第 3 步 (Dicts)，从而触发过滤逻辑
+            return ding_make_json_safe(value.model_dump(), _seen)
+        except Exception:
+            pass
+
+    # --- 7. Pydantic v1-style / other libs with .dict() -------------------
+    if hasattr(value, "dict") and callable(value.dict):
+        _seen.add(obj_id)
+        try:
+            return ding_make_json_safe(value.dict(), _seen)
+        except Exception:
+            pass
+
+    # --- 8. Generic "to_dict" pattern -------------------------------------
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        _seen.add(obj_id)
+        try:
+            return ding_make_json_safe(value.to_dict(), _seen)
+        except Exception:
+            pass
+
+    # --- 9. Generic Python objects with __dict__ --------------------------
+    if hasattr(value, "__dict__"):
+        _seen.add(obj_id)
+        try:
+            return ding_make_json_safe(vars(value), _seen)
+        except Exception:
+            pass
+
+    # --- 10. Last resort ---------------------------------------------------
+    try:
+        return repr(value)
+    except Exception:
+        return "<Unrepresentable Object>"
+
+
 ag_ui_langgraph.agent.langchain_messages_to_agui = ding_langchain_messages_to_agui
 ag_ui_langgraph.utils.agui_messages_to_langchain = ding_agui_messages_to_langchain
+ag_ui_langgraph.utils.make_json_safe = ding_make_json_safe
+ag_ui_langgraph.agent.resolve_reasoning_content = ding_resolve_reasoning_content
 
 
 async def graph_aget_state(self, config, *, subgraphs: bool = False):
@@ -195,35 +359,23 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
     """
 
     async def run(self, input: RunAgentInput, extra_config: dict | None = None) -> AsyncGenerator[str]:
-        # 1. 备份当前的 config
-        # 我们只保存引用即可，因为后续我们是赋值新的字典给 self.config，而不是原地修改
         previous_config = self.config
 
-        # 2. 合并配置 (Extend self.config)
-        # 确保 current_config 是一个字典，即使 previous_config 是 None
         current_config = previous_config.copy() if previous_config else {}
 
         if extra_config:
-            # 将传入的 extra_config 合并到当前配置中
-            # 注意：extra_config 中的键值对会覆盖原有的配置
             current_config.update(extra_config)
 
-        # 更新实例的 config
         self.config = current_config
 
         try:
-            # 3. 调用父类的 run 方法
-            # 由于父类 run 是一个 AsyncGenerator，我们需要遍历它并 yield 出来
             async for event_str in super().run(input):
                 yield event_str
         finally:
-            # 4. 恢复原来的 config
-            # 无论上面的代码是否报错，这里都会执行，确保状态回滚
             self.config = previous_config
 
     async def get_thread_messages(self, thread_id: str, run_id: str):
         """
-        [新增功能] 根据 thread_id 获取该对话的所有历史消息。
         返回格式已转换为前端友好的 AG-UI 格式。
         """
 
@@ -325,3 +477,71 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
         stream = self.graph.astream_events(**kwargs)
 
         return {"stream": stream, "state": state, "config": config}
+
+    async def _handle_single_event(self, event: Any, state) -> AsyncGenerator[str]:
+        if event.get("event") == ag_ui_langgraph.LangGraphEventTypes.OnToolEnd:
+            tool_call_output = event.get("data", {}).get("output")
+            if isinstance(tool_call_output, Command):
+                messages = tool_call_output.update.get("messages", [])
+                tool_messages = [message for message in messages if isinstance(message, ToolMessage)]
+
+                # History-preserving Commands (such as handoff) may include prior tool messages.
+                # Only the newly appended tool result belongs to the current OnToolEnd event.
+                if tool_messages:
+                    tool_messages = [tool_messages[-1]]
+
+                for tool_msg in tool_messages:
+                    if not self.active_run["has_function_streaming"]:
+                        yield self._dispatch_event(
+                            ag_ui_langgraph.agent.ToolCallStartEvent(
+                                type=EventType.TOOL_CALL_START,
+                                tool_call_id=tool_msg.tool_call_id,
+                                tool_call_name=tool_msg.name or event.get("name") or "tool",
+                                parent_message_id=tool_msg.id,
+                                raw_event=event,
+                            )
+                        )
+                        yield self._dispatch_event(
+                            ag_ui_langgraph.agent.ToolCallArgsEvent(
+                                type=EventType.TOOL_CALL_ARGS,
+                                tool_call_id=tool_msg.tool_call_id,
+                                delta=json.dumps(event.get("data", {}).get("input", {})),
+                                raw_event=event,
+                            )
+                        )
+                        yield self._dispatch_event(
+                            ag_ui_langgraph.agent.ToolCallEndEvent(
+                                type=EventType.TOOL_CALL_END,
+                                tool_call_id=tool_msg.tool_call_id,
+                                raw_event=event,
+                            )
+                        )
+
+                    yield self._dispatch_event(
+                        ag_ui_langgraph.agent.ToolCallResultEvent(
+                            type=EventType.TOOL_CALL_RESULT,
+                            tool_call_id=tool_msg.tool_call_id,
+                            message_id=str(uuid.uuid4()),
+                            content=normalize_tool_content(tool_msg.content),
+                            role="tool",
+                        )
+                    )
+                return
+
+        # 1. 尝试提取 reasoning_data，用于判断是否命中需要修复的逻辑分支
+        # 注意：你需要确保引入了 resolve_reasoning_content 和 LangGraphEventTypes
+        event_type = event.get("event")
+        chunk = event.get("data", {}).get("chunk")
+
+        reasoning_data = None
+        if event_type == ag_ui_langgraph.LangGraphEventTypes.OnChatModelStream and chunk:
+            reasoning_data = ding_resolve_reasoning_content(chunk)
+
+        if reasoning_data:
+            for evt in self.handle_thinking_event(reasoning_data):
+                yield evt
+
+            return
+
+        async for evt in super()._handle_single_event(event, state):
+            yield evt

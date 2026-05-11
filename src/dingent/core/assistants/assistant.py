@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import cast
 from uuid import UUID
+from langchain.tools import ToolException
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import StructuredTool, Tool
+from langchain_mcp_adapters.tools import load_mcp_tools, _convert_call_tool_result
+from langgraph.types import Command
+
 
 from ..plugins.plugin import PluginRuntime
 from ..plugins.plugin_manager import PluginManager
@@ -34,6 +41,7 @@ class AssistantRuntime:
         log_method: Callable,
         description: str,
         plugin_instances: dict[str, PluginRuntime],
+        plugin_configs: dict[str, dict],
     ):
         """Initialize the runtime with metadata and plugin instances.
 
@@ -48,6 +56,7 @@ class AssistantRuntime:
         self.name = name
         self.description = description
         self.plugin_instances = plugin_instances
+        self.plugin_configs = plugin_configs
         self._log_method = log_method
 
     @classmethod
@@ -58,10 +67,12 @@ class AssistantRuntime:
         log_method: Callable,
     ) -> AssistantRuntime:
         plugin_instances: dict[str, PluginRuntime] = {}
+        plugin_configs: dict[str, dict] = {}
         for plugin_spec in assistant.plugins:
             try:
                 inst = await plugin_manager.get_or_create_runtime(plugin_spec.registry_id)
                 plugin_instances[plugin_spec.registry_id] = inst
+                plugin_configs[plugin_spec.registry_id] = plugin_spec.config or {}
             except Exception as e:
                 # Log and continue; this isolates failures per plugin.
                 log_method(
@@ -76,23 +87,40 @@ class AssistantRuntime:
             log_method=log_method,
             description=assistant.description or "",
             plugin_instances=plugin_instances,
+            plugin_configs=plugin_configs,
         )
 
     @asynccontextmanager
     async def load_tools(self):
         runnable: list[RunnableTool] = []
-        for inst in self.plugin_instances.values():
-            # Short-lived open to enumerate tools; avoids holding many connections.
+        for registry_id, inst in self.plugin_instances.items():
+            current_plugin_config = self.plugin_configs.get(registry_id, {})
             async with inst.mcp_client as client:
-                tools = await client.list_tools()
-
+                tools = await load_mcp_tools(client.session)
             for t in tools:
 
-                async def call_tool(arguments: dict, _runtime=inst, _tool=t):
-                    async with _runtime.mcp_client as tool_client:
-                        return await tool_client.call_tool(_tool.name, arguments=arguments)
+                async def call_tool(
+                    arguments: dict,
+                    meta: dict | None = None,
+                    _runtime=inst,
+                    _tool=t,
+                    _config=current_plugin_config,
+                ):
+                    meta = meta or {}
+                    meta.update(_config)
 
-                runnable.append(RunnableTool(tool=t, plugin_id=inst.id, run=call_tool))
+                    async with _runtime.mcp_client as tool_client:
+                        result = await tool_client.call_tool(
+                            _tool.name,
+                            arguments=arguments,
+                            meta=meta,
+                        )
+                        result.isError = result.is_error
+                        result.structuredContent = result.structured_content
+                        result = _convert_call_tool_result(result)
+                        return result
+
+                runnable.append(RunnableTool(tool=cast(StructuredTool, t), plugin_id=inst.id, run=call_tool))
         yield runnable
 
     async def aclose(self):

@@ -1,8 +1,20 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  Loader2,
+  ChevronDown,
+  ChevronRight,
+  Edit2,
+  Check,
+  X,
+} from "lucide-react";
 import { safeBool, effectiveStatusForItem, toStr } from "@/lib/utils";
-import { Assistant, AssistantPlugin, PluginManifest, LLMModelConfig } from "@/types/entity";
+import {
+  Assistant,
+  AssistantPlugin,
+  PluginManifest,
+  LLMModelConfig,
+} from "@/types/entity";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -28,6 +40,8 @@ function PluginEditor({
   const enabled = safeBool(plugin.enabled, false);
   const { level, label } = effectiveStatusForItem(plugin.status, enabled);
   const [isConfigExpanded, setIsConfigExpanded] = useState(false);
+  const [editingToolIndex, setEditingToolIndex] = useState<number | null>(null);
+  const [tempDescription, setTempDescription] = useState<string>("");
 
   return (
     <div className="rounded-md border p-4">
@@ -241,20 +255,58 @@ function PluginEditor({
             {plugin.tools!.map((tool, k) => (
               <div
                 key={k}
-                className="flex items-center justify-between rounded border p-3"
+                className="flex items-start justify-between rounded border p-3"
               >
                 {" "}
-                {/* Increased padding */}
-                <div>
+                {/* Increased padding and items-start for better alignment */}
+                <div className="flex-1 min-w-0">
                   <div className="font-mono">{tool.name}</div>
 
-                  {tool.description && (
-                    <div className="text-muted-foreground text-xs">
-                      {tool.description}
+                  {editingToolIndex === k ? (
+                    <div className="mt-2 space-y-2">
+                      <Textarea
+                        value={tempDescription}
+                        onChange={(e) => setTempDescription(e.target.value)}
+                        placeholder="Enter tool description"
+                        className="min-h-[60px] text-xs"
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="default"
+                          onClick={() => {
+                            const next = structuredClone(plugin);
+                            if (next.tools && next.tools.length > k) {
+                              next.tools[k]!.description = tempDescription;
+                            }
+                            onChange(next);
+                            setEditingToolIndex(null);
+                            setTempDescription("");
+                          }}
+                        >
+                          <Check className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setEditingToolIndex(null);
+                            setTempDescription("");
+                          }}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
                     </div>
+                  ) : (
+                    tool.description && (
+                      <div className="text-muted-foreground text-xs">
+                        {tool.description}
+                      </div>
+                    )
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 ml-4">
                   <span className="text-muted-foreground text-sm">Enable</span>
 
                   <Switch
@@ -268,6 +320,19 @@ function PluginEditor({
                       onChange(next);
                     }}
                   />
+
+                  {editingToolIndex !== k && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setEditingToolIndex(k);
+                        setTempDescription(tool.description || "");
+                      }}
+                    >
+                      <Edit2 className="h-3 w-3" />
+                    </Button>
+                  )}
                 </div>
               </div>
             ))}
@@ -303,12 +368,9 @@ export function AssistantEditor({
 }) {
   const enabled = safeBool(assistant.enabled, false);
 
-  const currentIds = new Set((assistant.plugins || []).map((p) => p.registry_id));
-
-  // 监控currentIds和availablePlugins的变化
-  useEffect(() => {
-    console.log("Current Plugin IDs:", Array.from(currentIds));
-  }, [currentIds]);
+  const currentIds = new Set(
+    (assistant.plugins || []).map((p) => p.registry_id),
+  );
 
   const addable = useMemo(
     () =>
@@ -347,30 +409,58 @@ export function AssistantEditor({
           </div>
         </div>
       </div>
+      {/* 2. Description (Handoff Prompt) */}
       <div className="space-y-2">
-        <Label>Description</Label>
+        <div className="flex flex-col space-y-1">
+          <Label>Description (Handoff/Routing)</Label>
+          <span className="text-xs text-muted-foreground">
+            Public description used by the <strong>Router Agent</strong> to
+            decide when to transfer tasks to this assistant. Keep it concise.
+          </span>
+        </div>
         <Textarea
+          className="resize-y"
+          placeholder="e.g. Handles refund requests, order status checks, and payment issues."
           value={assistant.description || ""}
           onChange={(e) =>
             onChange({ ...assistant, description: e.target.value })
           }
         />
       </div>
-
+      {/* 3. Instructions (System Prompt) */}
+      <div className="space-y-2">
+        <div className="flex flex-col space-y-1">
+          <Label>System Instructions (Prompt)</Label>
+          <span className="text-xs text-muted-foreground">
+            The internal persona and rules for this agent. Defines how it
+            behaves and executes tasks.
+          </span>
+        </div>
+        <Textarea
+          className="min-h-[200px] font-mono text-sm leading-relaxed" // 使用等宽字体和较大的高度
+          placeholder="e.g. You are a helpful support agent. You must verify the user ID before checking order status..."
+          value={assistant.instructions || ""}
+          onChange={(e) =>
+            onChange({ ...assistant, instructions: e.target.value })
+          }
+        />
+      </div>
       <div className="space-y-2">
         <Label>Model Configuration (Optional)</Label>
         <p className="text-sm text-muted-foreground mb-2">
-          Override the default model for this assistant. Leave empty to use workspace/workflow default.
+          Override the default model for this assistant. Leave empty to use
+          workspace/workflow default.
         </p>
         <ModelSelector
           models={availableModels}
           value={assistant.model_config_id || null}
-          onChange={(modelId) => onChange({ ...assistant, model_config_id: modelId })}
+          onChange={(modelId) =>
+            onChange({ ...assistant, model_config_id: modelId })
+          }
           placeholder="Use default model"
           allowClear={true}
         />
       </div>
-
       <Separator />
       <div className="flex items-center justify-start gap-4">
         <h3 className="text-base font-semibold">Plugins</h3>

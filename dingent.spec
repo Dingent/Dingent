@@ -40,6 +40,14 @@ binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 dingent_hidden_imports = collect_submodules('dingent')
 hiddenimports += dingent_hidden_imports
+hiddenimports += ['rich._unicode_data.unicode17-0-0']
+
+
+hiddenimports += ['alembic']
+datas += [
+    ('alembic.ini', '.'),       # 将 alembic.ini 放在运行时的根目录
+    ('alembic', 'alembic'),     # 将 alembic 文件夹递归拷贝到运行时的 alembic 目录中
+]
 
 static = [('build/runtime.tar.gz', '.')]
 
