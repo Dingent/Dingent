@@ -1,8 +1,9 @@
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import InjectedToolCallId, StructuredTool, tool
+from langchain_core.tools import InjectedToolCallId, tool
+from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
 
@@ -17,12 +18,18 @@ def create_handoff_tool(agent_name: str, description: str | None, log_method: Ca
     )
 
     @tool(tool_name, description=tool_description)
-    async def handoff_tool(tool_call_id: Annotated[str, InjectedToolCallId]):
+    async def handoff_tool(state: Annotated[Any, InjectedState], tool_call_id: Annotated[str, InjectedToolCallId]):
         log_method("info", f"Handoff to {agent_name}", context={"id": tool_call_id})
         return Command(
             goto=agent_name,
             graph=Command.PARENT,
-            update={"messages": [ToolMessage(content=f"Transferred to {agent_name}", tool_call_id=tool_call_id, name=tool_name)]},
+            update={
+                "messages": [
+                    *state["messages"],
+                    ToolMessage(content=f"Transferred to {agent_name}", tool_call_id=tool_call_id, name=tool_name),
+                ],
+                "active_agent": agent_name,
+            },
         )
 
     return handoff_tool

@@ -1,8 +1,8 @@
 import pytest
-from dingent.engine.agents.tools import create_handoff_tool
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
-from langchain_core.messages import ToolMessage
-import asyncio
+
+from dingent.engine.agents.tools import create_handoff_tool
 
 
 @pytest.mark.asyncio
@@ -21,7 +21,8 @@ async def test_create_handoff_tool():
     assert "SQL queries and database administration" in tool.description
 
     # Execute the tool
-    result = await tool.ainvoke({"name": "transfer_to_database_expert", "args": {}, "id": "test_call_123", "type": "tool_call"})
+    prior_message = AIMessage(content="", tool_calls=[{"name": "transfer_to_database_expert", "args": {}, "id": "test_call_123"}])
+    result = await tool.coroutine(state={"messages": [prior_message]}, tool_call_id="test_call_123")
 
     # Assert result is a Command
     assert isinstance(result, Command)
@@ -32,13 +33,17 @@ async def test_create_handoff_tool():
     assert result.update is not None
     assert "messages" in result.update
     messages = result.update["messages"]
-    assert len(messages) == 1
+    assert len(messages) == 2
 
-    msg = messages[0]
+    assert messages[0] is prior_message
+
+    msg = messages[1]
     assert isinstance(msg, ToolMessage)
     assert msg.content == "Transferred to database_expert"
     assert msg.tool_call_id == "test_call_123"
     assert msg.name == "transfer_to_database_expert"
+
+    assert result.update["active_agent"] == "database_expert"
 
     # Assert log_method was called correctly
     assert len(log_calls) == 1

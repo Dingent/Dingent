@@ -1,12 +1,11 @@
-from dataclasses import is_dataclass, asdict
-from enum import Enum
 import json
-from typing import Any
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import asdict, is_dataclass
+from enum import Enum
+from typing import Any
 
 import ag_ui_langgraph
-from ag_ui_langgraph.types import LangGraphReasoning
 import ag_ui_langgraph.utils
 from ag_ui.core import (
     ActivityMessage,
@@ -17,7 +16,8 @@ from ag_ui.core import (
     RunFinishedEvent,
 )
 from ag_ui.core.events import RunStartedEvent
-from ag_ui_langgraph.agent import Command, dump_json_safe, get_stream_payload_input
+from ag_ui_langgraph.agent import Command, dump_json_safe, get_stream_payload_input, normalize_tool_content
+from ag_ui_langgraph.types import LangGraphReasoning
 from ag_ui_langgraph.utils import (
     AGUIAssistantMessage,
     AGUIFunctionCall,
@@ -299,7 +299,7 @@ def ding_make_json_safe(value: Any, _seen: set[int] | None = None) -> Any:
         return ding_make_json_safe(asdict(value), _seen)
 
     # --- 6. Pydantic-like models (v2: model_dump) -------------------------
-    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+    if hasattr(value, "model_dump") and callable(value.model_dump):
         _seen.add(obj_id)
         try:
             # model_dump 返回字典，递归调用会进入上方的第 3 步 (Dicts)，从而触发过滤逻辑
@@ -308,7 +308,7 @@ def ding_make_json_safe(value: Any, _seen: set[int] | None = None) -> Any:
             pass
 
     # --- 7. Pydantic v1-style / other libs with .dict() -------------------
-    if hasattr(value, "dict") and callable(getattr(value, "dict")):
+    if hasattr(value, "dict") and callable(value.dict):
         _seen.add(obj_id)
         try:
             return ding_make_json_safe(value.dict(), _seen)
@@ -316,7 +316,7 @@ def ding_make_json_safe(value: Any, _seen: set[int] | None = None) -> Any:
             pass
 
     # --- 8. Generic "to_dict" pattern -------------------------------------
-    if hasattr(value, "to_dict") and callable(getattr(value, "to_dict")):
+    if hasattr(value, "to_dict") and callable(value.to_dict):
         _seen.add(obj_id)
         try:
             return ding_make_json_safe(value.to_dict(), _seen)
@@ -478,7 +478,56 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
 
         return {"stream": stream, "state": state, "config": config}
 
-    async def _handle_single_event(self, event: Any, state) -> AsyncGenerator[str, None]:
+    async def _handle_single_event(self, event: Any, state) -> AsyncGenerator[str]:
+        if event.get("event") == ag_ui_langgraph.LangGraphEventTypes.OnToolEnd:
+            tool_call_output = event.get("data", {}).get("output")
+            if isinstance(tool_call_output, Command):
+                messages = tool_call_output.update.get("messages", [])
+                tool_messages = [message for message in messages if isinstance(message, ToolMessage)]
+
+                # History-preserving Commands (such as handoff) may include prior tool messages.
+                # Only the newly appended tool result belongs to the current OnToolEnd event.
+                if tool_messages:
+                    tool_messages = [tool_messages[-1]]
+
+                for tool_msg in tool_messages:
+                    if not self.active_run["has_function_streaming"]:
+                        yield self._dispatch_event(
+                            ag_ui_langgraph.agent.ToolCallStartEvent(
+                                type=EventType.TOOL_CALL_START,
+                                tool_call_id=tool_msg.tool_call_id,
+                                tool_call_name=tool_msg.name or event.get("name") or "tool",
+                                parent_message_id=tool_msg.id,
+                                raw_event=event,
+                            )
+                        )
+                        yield self._dispatch_event(
+                            ag_ui_langgraph.agent.ToolCallArgsEvent(
+                                type=EventType.TOOL_CALL_ARGS,
+                                tool_call_id=tool_msg.tool_call_id,
+                                delta=json.dumps(event.get("data", {}).get("input", {})),
+                                raw_event=event,
+                            )
+                        )
+                        yield self._dispatch_event(
+                            ag_ui_langgraph.agent.ToolCallEndEvent(
+                                type=EventType.TOOL_CALL_END,
+                                tool_call_id=tool_msg.tool_call_id,
+                                raw_event=event,
+                            )
+                        )
+
+                    yield self._dispatch_event(
+                        ag_ui_langgraph.agent.ToolCallResultEvent(
+                            type=EventType.TOOL_CALL_RESULT,
+                            tool_call_id=tool_msg.tool_call_id,
+                            message_id=str(uuid.uuid4()),
+                            content=normalize_tool_content(tool_msg.content),
+                            role="tool",
+                        )
+                    )
+                return
+
         # 1. 尝试提取 reasoning_data，用于判断是否命中需要修复的逻辑分支
         # 注意：你需要确保引入了 resolve_reasoning_content 和 LangGraphEventTypes
         event_type = event.get("event")
