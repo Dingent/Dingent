@@ -267,7 +267,7 @@ def ding_make_json_safe(value: Any, _seen: set[int] | None = None) -> Any:
     UNSAFE_KEYS = {"runtime", "config", "configurable", "callbacks", "__pregel_runtime", "__pregel_task_id", "stream_writer", "store"}
 
     # --- 1. Primitives -----------------------------------------------------
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, str | int | float | bool) or value is None:
         return value
 
     # --- 2. Enum → use underlying value -----------------------------------
@@ -289,7 +289,7 @@ def ding_make_json_safe(value: Any, _seen: set[int] | None = None) -> Any:
         return safe_dict
 
     # --- 4. Iterable containers -------------------------------------------
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, list | tuple | set | frozenset):
         _seen.add(obj_id)
         return [ding_make_json_safe(v, _seen) for v in value]
 

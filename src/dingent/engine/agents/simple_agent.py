@@ -1,32 +1,28 @@
 import json
-from typing import Annotated, Any, Awaitable, Sequence, cast, override
-from langchain.agents import AgentState, create_agent
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, cast
 
-
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, TodoListMiddleware
 from langchain.agents.middleware.todo import WRITE_TODOS_SYSTEM_PROMPT, WRITE_TODOS_TOOL_DESCRIPTION, Todo
 from langchain.agents.middleware.types import ModelCallResult, ToolCallRequest
 from langchain.tools import BaseTool, InjectedToolCallId, tool
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import StructuredTool
-from langgraph.graph.state import CompiledStateGraph, RunnableConfig
-from langgraph.types import Checkpointer, Command
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
 
 from .messages import ActivityMessage
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, TodoListMiddleware
-from langchain.agents import create_agent
-from typing import Any, Callable
 
 
-def mcp_artifact_to_agui_display(tool_name, query_args: dict, surface_base_id: str | list[str], artifact: list[dict[str, Any]], update_data=False) -> dict[str, list[dict]]:
+def mcp_artifact_to_agui_display(tool_name, query_args: dict, surface_base_id: str | list[str], artifact: list[dict[str, Any]], update_data=False) -> list[dict[str, Any]]:
     if not isinstance(artifact, list):
         return [artifact]
-    else:
-        return cast(Any, artifact)
     agui_display = {"operations": []}
 
     if isinstance(surface_base_id, list):
-        assert len(surface_base_id) == len(artifact), "Surface base ID and artifact length mismatch"
+        if len(surface_base_id) != len(artifact):
+            raise ValueError("Surface base ID and artifact length mismatch")
 
     for i, item in enumerate(artifact):
         # 1. 基础渲染信号
@@ -214,7 +210,7 @@ def mcp_artifact_to_agui_display(tool_name, query_args: dict, surface_base_id: s
         if not update_data:
             agui_display["operations"].append({"beginRendering": {"surfaceId": surface_id, "root": "root", "styles": {"primaryColor": "#1976D2", "font": "Roboto"}}})
 
-    return agui_display
+    return [agui_display]
 
 
 def _transform_rows_to_a2ui(columns: list[str], rows: list[list[str | int | Any]]) -> list[dict]:
@@ -249,8 +245,9 @@ class DingMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
         all_messages = request.messages
-        filtered_messages: list[AnyMessage] = [msg for msg in all_messages if isinstance(msg, (SystemMessage, HumanMessage, AIMessage, ToolMessage))]
-        request = request.override(messages=filtered_messages)
+        filtered_messages: list[AnyMessage] = [msg for msg in all_messages if isinstance(msg, SystemMessage | HumanMessage | AIMessage | ToolMessage)]
+        model_settings = {**request.model_settings, "parallel_tool_calls": False}
+        request = request.override(messages=filtered_messages, model_settings=model_settings)
         result = await handler(request)
 
         return result
@@ -262,7 +259,7 @@ class DingMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command[Any]:
         tool_call = request.tool_call
         tool_call_id = tool_call.get("id") or "unknown_tool_call_id"
-        tool_name = request.tool.name
+        tool_name = request.tool.name if request.tool else "tool"
 
         try:
             result = await handler(request)
@@ -283,7 +280,7 @@ class DingMiddleware(AgentMiddleware):
                             pass  # 保持默认的 model_text
 
                 if isinstance(data, dict) and "display" in data:
-                    artifact = cast(dict[str, list[dict]], data.get("display"))
+                    artifact = cast(list[dict[str, Any]], data.get("display"))
                     model_text = data.get("model_text", content)
                 else:
                     model_text = content
@@ -313,7 +310,6 @@ class DingMiddleware(AgentMiddleware):
                 raise ValueError(f"Unsupported result type: {type(result)}")
 
         except Exception as e:
-            raise e
             return Command(update={"messages": [ToolMessage(content=f"Execution Error: {str(e)}", tool_call_id=tool_call_id, is_error=True)]})
 
 
@@ -362,7 +358,7 @@ def build_simple_react_agent(
     llm: BaseChatModel,
     tools: list[BaseTool],
     system_prompt: str | None = None,
-    max_iterations: int = 6,
+    max_iterations: int = 6,  # noqa: ARG001
 ) -> CompiledStateGraph:
     # 使用 create_react_agent 并传入 middleware
     agent = create_agent(

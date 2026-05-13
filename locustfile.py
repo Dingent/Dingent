@@ -1,6 +1,6 @@
-from locust import HttpUser, task, between, events
 import uuid
-import json
+
+from locust import HttpUser, between, task
 
 RUN_ID = "f26e1be5-1ce9-423b-9d2d-652c472369ff"
 

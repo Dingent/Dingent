@@ -1,19 +1,10 @@
 import json
-from typing import Any, List, Union
+from typing import Any
 
-
-# 引入真实的 litellm 函数，重命名以避免混淆
 from langchain_core.language_models import FakeMessagesListChatModel
-from langchain_core.language_models.fake_chat_models import FakeChatModel
-from litellm import completion as actual_completion
-from litellm import acompletion as actual_acompletion
+from langchain_core.messages import AIMessage, BaseMessage, ToolCall
 
 fake_llm = FakeMessagesListChatModel(responses=[])
-
-import json
-from typing import List, Union
-from langchain_core.messages import AIMessage, BaseMessage, ToolCall
-from langchain_core.language_models import FakeMessagesListChatModel
 
 
 class FakeChatModelWithTools(FakeMessagesListChatModel):
@@ -26,10 +17,10 @@ class FakeChatModelWithTools(FakeMessagesListChatModel):
 
 
 def create_replay_llm(json_path: str) -> FakeChatModelWithTools:
-    responses: List[BaseMessage] = []
+    responses: list[BaseMessage] = []
 
     try:
-        with open(json_path, "r", encoding="utf-8") as f:
+        with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         print(f"Warning: Trace file {json_path} not found.")

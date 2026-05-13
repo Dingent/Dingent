@@ -1,7 +1,8 @@
-import shutil
 import os
+import shutil
 import sys
 import tempfile
+
 import uvicorn
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,14 +12,13 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import uuid
-from unittest.mock import patch
-from contextlib import asynccontextmanager, ExitStack, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
-from dingent.core.plugins.schemas import RunnableTool
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import StructuredTool  # noqa: E402
 
-from tests.utils import create_replay_llm
+from dingent.core.plugins.schemas import RunnableTool  # noqa: E402
+from tests.utils import create_replay_llm  # noqa: E402
 
 
 # ==========================================
@@ -29,7 +29,7 @@ def dummy_function(data: str):
     return f"Processed: {data}"
 
 
-async def mock_run_tool(arguments, meta=None, **kwargs):
+async def mock_run_tool(arguments, meta=None, **kwargs):  # noqa: ARG001
     return f"Mock Result for {arguments}"
 
 
@@ -54,7 +54,7 @@ def setup_temp_home():
     if str(paths.data_root) != str(test_home):
         print(f"⚠️ Warning: paths.data_root ({paths.data_root}) != test_home ({test_home})")
     else:
-        print(f"[Environment] paths re-initialized successfully.")
+        print("[Environment] paths re-initialized successfully.")
 
     try:
         yield test_home
@@ -71,7 +71,7 @@ def setup_temp_home():
 
 
 @asynccontextmanager
-async def _mock_load_tools(self):
+async def _mock_load_tools(self):  # noqa: ARG001
     tools_list = [
         "load_demo_dataset",
         "quality_control_analysis",
@@ -102,9 +102,10 @@ def init_load_test_data():
 
     # get_db_session 通常是一个 yield session 的生成器
     # 我们需要手动 next() 它来获取实际的 session 对象
-    from dingent.server.api.dependencies import get_db_session
     from sqlmodel import Session
+
     from dingent.core.db.models import Workspace
+    from dingent.server.api.dependencies import get_db_session
 
     session_generator = get_db_session()
     session: Session = next(session_generator)
@@ -164,8 +165,8 @@ def start_server():
     with ExitStack() as stack:
         # 应用 Mock
         stack.enter_context(setup_temp_home())
-        from dingent.core.paths import paths
         from dingent.core.config import settings
+        from dingent.core.paths import paths
 
         paths.__init__()
         settings.DATABASE_URL = f"sqlite:///{paths.sqlite_path}"

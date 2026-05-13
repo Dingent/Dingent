@@ -237,7 +237,8 @@ class WorkspaceAssistantService:
     async def add_plugin_to_assistant(self, assistant_id: UUID, plugin_registry_id: str) -> AssistantRead:
         crud_assistant.add_plugin_to_assistant(db=self.session, assistant_id=assistant_id, plugin_registry_id=plugin_registry_id)
         assistant_dto = await self.get_assistant_details(assistant_id)
-        assert assistant_dto is not None
+        if assistant_dto is None:
+            raise RuntimeError("Assistant unexpectedly deleted during operation")
         return assistant_dto
 
     async def update_plugin_on_assistant(self, assistant_id: UUID, plugin_id: UUID, plugin_update: PluginUpdateOnAssistant) -> AssistantRead:
@@ -248,7 +249,8 @@ class WorkspaceAssistantService:
             plugin_update=plugin_update,
         )
         assistant_dto = await self.get_assistant_details(assistant_id)
-        assert assistant_dto is not None
+        if assistant_dto is None:
+            raise RuntimeError("Assistant unexpectedly deleted during operation")
         return assistant_dto
 
     async def remove_plugin_from_assistant(self, assistant_id: UUID, registry_id: str) -> None:

@@ -1,10 +1,10 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
-from pathlib import Path
-import sys
 import glob
-import os
+import sys
+from pathlib import Path
+
+import matplotlib.font_manager as fm
+import matplotlib.pyplot as plt
+import pandas as pd
 
 # --- 1. 配置与环境检测 ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -23,7 +23,7 @@ def configure_chinese_font():
                 print(f">>> 字体设置成功: 使用 '{font}'")
                 found_font = True
                 break
-        except:
+        except Exception:
             continue
     if not found_font:
         print(">>> ⚠️ 警告: 未找到推荐的中文字体，图表中的中文可能显示为方框。")

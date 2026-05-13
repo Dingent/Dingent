@@ -1,10 +1,11 @@
-from typing import Literal, Optional
-from fastmcp import FastMCP
-import scanpy as sc
 import os
-import requests
 import tarfile
 import zipfile
+from typing import Literal
+
+import requests
+import scanpy as sc
+from fastmcp import FastMCP
 
 # 创建 MCP Server
 mcp = FastMCP("Bio-Data-Loader")
@@ -47,9 +48,7 @@ def _extract_archive(file_path: str, extract_to: str):
 
 
 @mcp.tool(task=True)
-async def fetch_file_from_url(
-    url: str, file_type: Literal["h5ad", "archive", "auto"] = "auto"
-) -> str:
+async def fetch_file_from_url(url: str, file_type: Literal["h5ad", "archive", "auto"] = "auto") -> str:
     """
     从 URL 下载真实数据。
 
@@ -78,9 +77,7 @@ async def fetch_file_from_url(
 
         if is_archive:
             # 创建解压目录
-            extract_dir = os.path.join(
-                WORK_DIR, os.path.basename(downloaded_path) + "_extracted"
-            )
+            extract_dir = os.path.join(WORK_DIR, os.path.basename(downloaded_path) + "_extracted")
             os.makedirs(extract_dir, exist_ok=True)
             _extract_archive(downloaded_path, extract_dir)
             return f"Success: Archive downloaded and extracted to: {extract_dir}"
@@ -92,9 +89,7 @@ async def fetch_file_from_url(
 
 
 @mcp.tool(task=True)
-async def convert_10x_to_h5ad(
-    input_path: str, output_filename: str = "converted.h5ad"
-) -> str:
+async def convert_10x_to_h5ad(input_path: str, output_filename: str = "converted.h5ad") -> str:
     """
     将 10x Genomics 格式 (matrix.mtx, barcodes.tsv, features.tsv) 转换为 .h5ad。
 

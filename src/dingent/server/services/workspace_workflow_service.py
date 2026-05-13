@@ -76,7 +76,8 @@ class WorkspaceWorkflowService:
 
     def create_workflow(self, wf_create: WorkflowCreate) -> WorkflowReadBasic:
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         if crud_workflow.get_workflow_by_name(self.session, name=wf_create.name, workspace_id=self.workspace_id):
             raise ValueError(f"Workflow name '{wf_create.name}' already exists.")
         wf = crud_workflow.create_workflow(self.session, wf_create=wf_create, workspace_id=self.workspace_id, user_id=self.user_id)
@@ -84,7 +85,8 @@ class WorkspaceWorkflowService:
 
     def replace_workflow(self, workflow_id: UUID, wf_create: WorkflowReplace):
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         wf = self._get_workflow(workflow_id)
         if wf is None:
             raise WorkflowNotFoundError(f"Workflow '{workflow_id}' not found or access denied.")
@@ -97,7 +99,8 @@ class WorkspaceWorkflowService:
 
     def update_workflow(self, workflow_id: UUID, wf_update: WorkflowUpdate) -> WorkflowReadBasic:
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         wf = self._get_workflow(workflow_id)
         if wf is None:
             raise WorkflowNotFoundError(f"Workflow '{workflow_id}' not found or access denied.")
@@ -111,7 +114,8 @@ class WorkspaceWorkflowService:
 
     def delete_workflow(self, workflow_id: UUID) -> bool:
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         wf = self._get_workflow(workflow_id)
         if wf is None:
             return False
@@ -131,7 +135,8 @@ class WorkspaceWorkflowService:
 
     def create_node(self, workflow_id: UUID, payload: WorkflowNodeCreate):  # payload: WorkflowNodeCreate
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         wf = self._get_workflow(workflow_id)
         if wf is None:
             raise WorkflowNotFoundError(f"Workflow '{workflow_id}' not found or access denied.")
@@ -140,13 +145,15 @@ class WorkspaceWorkflowService:
 
     def update_node(self, workflow_id: UUID, node_id: UUID, payload):  # payload: WorkflowNodeUpdate
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         node = crud_workflow.update_workflow_node(self.session, workflow_id=workflow_id, node_id=node_id, node_update=payload)
         return WorkflowNodeRead.model_validate(node)
 
     def delete_node(self, workflow_id: UUID, node_id: UUID) -> bool:
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         wf = self._get_workflow(workflow_id)
         if wf is None:
             raise WorkflowNotFoundError(f"Workflow '{workflow_id}' not found or access denied.")
@@ -169,7 +176,8 @@ class WorkspaceWorkflowService:
 
     def create_edge(self, workflow_id: UUID, payload):  # payload: WorkflowEdgeCreate
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         wf = self._get_workflow(workflow_id)
         if wf is None:
             raise WorkflowNotFoundError(f"Workflow '{workflow_id}' not found or access denied.")
@@ -178,7 +186,8 @@ class WorkspaceWorkflowService:
 
     def update_edge(self, workflow_id: UUID, edge_id: UUID, payload):  # payload: WorkflowEdgeUpdate
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         wf = self._get_workflow(workflow_id)
         if wf is None:
             raise WorkflowNotFoundError(f"Workflow '{workflow_id}' not found or access denied.")
@@ -190,7 +199,8 @@ class WorkspaceWorkflowService:
 
     def delete_edge(self, workflow_id: UUID, edge_id: UUID) -> bool:
         self._ensure_write_access()
-        assert self.user_id is not None
+        if self.user_id is None:
+            raise RuntimeError("user_id unexpectedly None after write access check")
         wf = self._get_workflow(workflow_id)
         if wf is None:
             raise WorkflowNotFoundError(f"Workflow '{workflow_id}' not found or access denied.")

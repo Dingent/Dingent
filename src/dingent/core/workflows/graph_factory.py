@@ -6,8 +6,6 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.callbacks import AsyncCallbackHandler
-
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph

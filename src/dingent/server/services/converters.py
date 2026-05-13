@@ -95,7 +95,8 @@ async def _build_assistant_read(assistant: Assistant, runtime_assistant: Assista
     """
     # 校验输入的一致性
     if runtime_assistant:
-        assert assistant.id == runtime_assistant.id, "Mismatched Assistant and AssistantRuntime IDs"
+        if assistant.id != runtime_assistant.id:
+            raise ValueError("Mismatched Assistant and AssistantRuntime IDs")
 
     # 确定顶层状态
     assistant_status = "active" if runtime_assistant else "inactive"

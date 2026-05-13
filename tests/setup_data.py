@@ -1,5 +1,6 @@
-from datetime import datetime
 import uuid
+from datetime import datetime
+
 from sqlmodel import Session
 
 from dingent.core.db.models import Assistant, AssistantPluginLink, Plugin, Workflow, WorkflowEdge, WorkflowNode
@@ -21,8 +22,6 @@ def mock_full_single_cell_data(workspace_id, session: Session):
     wf_id = uuid.uuid4()
     node_start_id = uuid.uuid4()
     node_second_id = uuid.uuid4()
-
-    user_id = uuid.uuid4()  # created_by_id
 
     # Assistant & Plugin 相关
     plugin_loader_id = uuid.uuid4()  # 对应 bio-data-loader

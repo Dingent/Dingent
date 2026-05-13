@@ -15,13 +15,13 @@ from uuid import UUID
 from langchain_litellm import ChatLiteLLM
 from sqlmodel import Session
 
-
 from dingent.core.db.models import Assistant, LLMModelConfig, Workflow, Workspace
 from dingent.core.security.crypto import get_secret_manager
 
 try:
-    import mlflow
     import os
+
+    import mlflow
 
     os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] = "5"
     os.environ["MLFLOW_HTTP_REQUEST_MAX_RETRIES"] = "0"
@@ -29,7 +29,7 @@ try:
     mlflow.set_experiment("traces-quickstart")
 
     mlflow.litellm.autolog()
-except:
+except Exception:
     print("MLflow not available or failed to initialize.")
     pass
 

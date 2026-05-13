@@ -2,18 +2,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from dingent.core.context import initialize_app_context
-
-from .api import api_router
-
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from sqlmodel import Session
 
 from dingent.core.assistants.assistant_factory import AssistantFactory
+from dingent.core.context import initialize_app_context
 from dingent.core.db.session import engine
 from dingent.core.logs.log_manager import LogManager
 from dingent.core.paths import paths
@@ -24,6 +17,8 @@ from dingent.core.workflows.graph_factory import GraphFactory
 from dingent.server.api.schemas import GitHubMarketBackend
 from dingent.server.services.copilotkit_service import CopilotKitSdk
 from dingent.server.services.plugin_sync_service import PluginSyncService
+
+from .api import api_router
 
 
 def _setup_global_services(app: FastAPI):

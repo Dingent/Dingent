@@ -1,9 +1,8 @@
 import pytest
-import json
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
-from dingent.engine.agents.simple_agent import _transform_rows_to_a2ui, DingMiddleware
-from langchain.agents.middleware import ToolCallRequest
+
+from dingent.engine.agents.simple_agent import DingMiddleware, _transform_rows_to_a2ui
 
 
 def test_transform_rows_to_a2ui():
@@ -53,7 +52,7 @@ async def test_ding_middleware_awrap_tool_call_with_tool_message():
     request = MockRequest()
 
     # Mock handler that returns a ToolMessage with an artifact
-    async def mock_handler(req):
+    async def mock_handler(req):  # noqa: ARG001
         return ToolMessage(
             content="Tool executed", tool_call_id="call_123", artifact={"structured_content": {"display": [{"type": "table", "rows": []}], "model_text": "Here is the table"}}
         )
@@ -85,7 +84,7 @@ async def test_ding_middleware_awrap_tool_call_with_command():
 
     request = MockRequest()
 
-    async def mock_handler(req):
+    async def mock_handler(req):  # noqa: ARG001
         return Command(graph="some_graph", update={"messages": ["new_message"]})
 
     result = await middleware.awrap_tool_call(request, mock_handler)

@@ -1,16 +1,16 @@
 import os
-from pathlib import Path
-import shutil
 import uuid
-from fastapi.testclient import TestClient
-from dingent.server.api.dependencies import get_db_session
-from dingent.server.app import create_app
+from pathlib import Path
+
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
+from fastapi.testclient import TestClient
+from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from dingent.core.db.models import *
-from dingent.core.paths import paths, AppPaths
+from dingent.core.db.models import Role, Workspace
+from dingent.core.paths import paths
+from dingent.server.api.dependencies import get_db_session
+from dingent.server.app import create_app
 
 TEST_DATABASE_URL = "sqlite:///:memory:"
 

@@ -272,7 +272,8 @@ class Workflow(SQLModel, table=True):
         for n in self.nodes:
             if n.is_start_node:
                 start_node = n
-        assert start_node is not None, "Workflow must have a start node."
+        if start_node is None:
+            raise ValueError("Workflow must have a start node.")
         adjacency_map = defaultdict(list)
         for edge in self.edges:
             src_name = normalize_agent_name(edge.source_node.name)

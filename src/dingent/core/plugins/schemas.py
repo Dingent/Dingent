@@ -4,9 +4,9 @@ from typing import Any, Literal
 
 import toml
 from fastmcp.mcp_config import MCPServerTypes
+from langchain_core.tools import StructuredTool
 from pydantic import PrivateAttr, model_validator
 from sqlmodel import Field, SQLModel
-from langchain_core.tools import StructuredTool, Tool
 
 
 class PluginConfigSchema(SQLModel):

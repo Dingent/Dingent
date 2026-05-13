@@ -1,5 +1,6 @@
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
 from dingent.engine.agents.tools import create_handoff_tool
@@ -22,6 +23,8 @@ async def test_create_handoff_tool():
 
     # Execute the tool
     prior_message = AIMessage(content="", tool_calls=[{"name": "transfer_to_database_expert", "args": {}, "id": "test_call_123"}])
+    assert isinstance(tool, StructuredTool)
+    assert tool.coroutine is not None
     result = await tool.coroutine(state={"messages": [prior_message]}, tool_call_id="test_call_123")
 
     # Assert result is a Command

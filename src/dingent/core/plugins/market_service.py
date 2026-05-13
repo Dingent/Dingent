@@ -2,8 +2,8 @@ from pathlib import Path
 from typing import Any
 
 from dingent.core.logs.log_manager import LogManager
+from dingent.core.market_schemas import MarketBackend, MarketItem, MarketItemCategory, MarketMetadata
 from dingent.core.plugins.schemas import PluginRead
-from dingent.server.api.schemas import MarketBackend, MarketItem, MarketItemCategory, MarketMetadata
 
 
 class MarketService:

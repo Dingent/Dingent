@@ -6,6 +6,7 @@ from fastapi.exceptions import HTTPException
 
 from dingent.core.llms.analytics_manager import AnalyticsManager
 from dingent.core.logs.log_manager import LogManager
+from dingent.core.market_schemas import MarketItemCategory
 from dingent.core.plugins.market_service import MarketService
 from dingent.core.plugins.plugin_manager import PluginManager
 from dingent.server.api.dependencies import (
@@ -14,7 +15,6 @@ from dingent.server.api.dependencies import (
     get_market_service,
     get_plugin_manager,
 )
-from dingent.server.api.schemas import MarketItemCategory
 
 router = APIRouter(prefix="/overview", tags=["Overview"])
 

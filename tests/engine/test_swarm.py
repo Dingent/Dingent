@@ -1,11 +1,10 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
-from dingent.engine.factories.swarm import create_assistant_graphs
-from dingent.core.workflows.schemas import ExecutableWorkflow
 
-
+import pytest
 from langchain_core.tools import tool
+
+from dingent.engine.factories.swarm import create_assistant_graphs
 
 
 @tool
@@ -21,7 +20,7 @@ async def test_create_assistant_graphs():
     llm_instance = MagicMock()
     llm_instance.name = "mock_llm"
 
-    def llm_resolver(assistant_id):
+    def llm_resolver(assistant_id):  # noqa: ARG001
         return llm_instance
 
     # Mock Log Method

@@ -1,11 +1,12 @@
-from typing import Any
-from fastmcp import FastMCP
-import scanpy as sc
-import matplotlib.pyplot as plt
-import io
-import os
 import base64
+import io
 import json
+import os
+from typing import Any
+
+import matplotlib.pyplot as plt
+import scanpy as sc
+from fastmcp import FastMCP
 
 # 创建 MCP Server
 mcp = FastMCP("Single-Cell-Analyzer")
@@ -296,7 +297,7 @@ def generate_markdown_report(report_title: str, markdown_body: str) -> dict[str,
 
     # 4. 构建返回信息
     # 注意：我们不在 model_text 里返回整个 Base64 内容，防止刷屏。
-    model_msg = f"Report has been generated. All placeholders replaced with Base64 images."
+    model_msg = "Report has been generated. All placeholders replaced with Base64 images."
 
     # 在前端展示部分，我们可以展示一个缩略版本，或者直接提示文件已生成
 

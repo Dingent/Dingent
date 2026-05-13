@@ -18,12 +18,12 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
-from alembic.config import Config as AlembicConfig
-from alembic import command as alembic_command
 
 import typer
 from rich.console import Console
 
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
 from dingent.core.db.session import create_db_and_tables
 from dingent.core.paths import paths
 
@@ -103,7 +103,7 @@ class AsyncServiceManager:
                 try:
                     await asyncio.wait_for(self.ready_events[dep_name].wait(), timeout=120)
                     await self._safe_print(f"[green]✓ {dep_name} is ready, starting {service.name}[/green]")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await self._safe_print(f"[bold red]❌ Timeout waiting for {dep_name}[/bold red]")
                     raise
 
@@ -156,11 +156,12 @@ class AsyncServiceManager:
         """流式输出日志"""
         port_regex = re.compile(r"http://localhost:(\d+)")
 
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            raise RuntimeError(f"Process {service.name} has no stdout")
         while not self._shutdown_event.is_set():
             try:
                 line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=0.5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if proc.returncode is not None:
                     break
                 continue
@@ -185,7 +186,8 @@ class AsyncServiceManager:
 
     async def _monitor_health(self, service: ServiceConfig):
         """监控服务健康状态"""
-        assert service.health_check_url is not None
+        if service.health_check_url is None:
+            raise RuntimeError(f"Service {service.name} has no health check URL")
         if await self._health_check(service.health_check_url):
             await self._safe_print(f"[bold green]✓ {service.name} is healthy![/bold green]")
             self.ready_events[service.name].set()
@@ -210,7 +212,7 @@ class AsyncServiceManager:
                     proc.terminate()
                     await asyncio.wait_for(proc.wait(), timeout=5)
                     await self._safe_print(f"[green]✓ {name} stopped[/green]")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await self._safe_print(f"[red]Force killing {name}.. .[/red]")
                     proc.kill()
                     await proc.wait()

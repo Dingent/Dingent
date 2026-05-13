@@ -1,14 +1,13 @@
-from contextlib import asynccontextmanager
 import statistics
-
-from langchain_core.tools import StructuredTool
-import pytest
-from sqlmodel.sql.expression import Select
 import uuid
+from contextlib import asynccontextmanager
 from unittest.mock import patch
 
-from sqlmodel import Session
+import pytest
 from fastapi.testclient import TestClient
+from langchain_core.tools import StructuredTool
+from sqlmodel import Session
+from sqlmodel.sql.expression import Select
 
 from dingent.core.db.models import Conversation, Workflow, Workspace
 from dingent.core.plugins.schemas import RunnableTool
@@ -45,7 +44,7 @@ def dummy_function(data: str):
 # 将其转换为 LangChain Tool 对象
 
 
-async def mock_run_tool(arguments, meta=None, **kwargs):
+async def mock_run_tool(arguments, meta=None, **kwargs):  # noqa: ARG001
     return f"Mock Result for {arguments}"
 
 
@@ -77,7 +76,7 @@ def mock_assistant_tools():
 
     # 模拟 asynccontextmanager 的行为
     @asynccontextmanager
-    async def _mock_load_tools(self):
+    async def _mock_load_tools(self):  # noqa: ARG001
         # yield 一个列表，就像真正的 load_tools 一样
         yield mock_runnables
 
@@ -94,7 +93,7 @@ def test_performance_batch(
     client: TestClient,
     session: Session,
     create_workspace,
-    mock_assistant_tools,
+    mock_assistant_tools,  # noqa: ARG001
 ):
     """
     测试 /chat/agent/{id}/run 接口，使用回放数据模拟 LLM 返回
