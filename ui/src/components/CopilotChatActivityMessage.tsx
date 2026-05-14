@@ -49,7 +49,11 @@ export function CopilotChatActivityList({
   ...props
 }: CopilotChatActivityListProps) {
   // 获取渲染逻辑的 Hook
-  const renderActivityMessage = useRenderActivityMessage();
+  const activityMessageRenderer = useRenderActivityMessage();
+  const renderActivityMessage =
+    typeof activityMessageRenderer === "function"
+      ? activityMessageRenderer
+      : activityMessageRenderer?.renderActivityMessage;
   const visibleMessages = useMemo(() => {
     if (!messages || messages.length === 0) return [];
 

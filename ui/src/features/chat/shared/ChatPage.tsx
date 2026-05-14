@@ -6,10 +6,7 @@ import { useAgent, CopilotSidebar } from "@copilotkit/react-core/v2";
 import { useRenderToolCall } from "@copilotkit/react-core";
 
 import { Check, CheckCircle2, Loader2 } from "lucide-react";
-import {
-  AgentSubscriber,
-  ThinkingTextMessageContentEvent,
-} from "@ag-ui/client";
+import { ThinkingTextMessageContentEvent } from "@ag-ui/client";
 
 import { useThreadContext } from "@/providers/ThreadProvider";
 import { ChatHeader } from "@/features/chat/chat-header";
@@ -91,7 +88,7 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
       clearThinkingText();
     }
 
-    const thinkingSubscriber: AgentSubscriber = {
+    const thinkingSubscriber = {
       onEvent: ({ event }) => {
         if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
           const thinkingEvent = event as ThinkingTextMessageContentEvent;
@@ -105,7 +102,7 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
       },
     };
 
-    const subscription = agent.agent.subscribe(thinkingSubscriber);
+    const subscription = agent.agent.subscribe(thinkingSubscriber as Parameters<typeof agent.agent.subscribe>[0]);
     return () => subscription.unsubscribe();
   }, [agent.agent, isThinking, appendThinkingText, clearThinkingText]);
 

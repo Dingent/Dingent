@@ -1,6 +1,6 @@
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from ag_ui.core import EventType, RunAgentInput
@@ -22,31 +22,34 @@ def build_run_input(*, forwarded_props=None, messages=None) -> RunAgentInput:
 
 
 @pytest.mark.asyncio
-async def test_prepare_stream_delegates_to_regenerate_when_history_is_longer():
+async def test_prepare_stream_filters_activity_messages_from_state():
+    from dingent.engine.agents.messages import ActivityMessage
+
     graph = MagicMock()
     graph.astream_events = MagicMock()
     agent = DingLangGraphAGUIAgent(name="test", graph=graph)
     agent.active_run = {"id": "run_1", "mode": "start"}
     agent.get_schema_keys = MagicMock(return_value={"input": [], "output": [], "config": [], "context": []})
-    agent.prepare_regenerate_stream = AsyncMock(return_value={"stream": "regen_stream", "state": "regen_state", "config": "regen_config"})
+
+    activity_msg = ActivityMessage(content=[{"type": "a2ui-surface"}])
 
     agent_state = SimpleNamespace(
         values={
             "messages": [
-                HumanMessage(id="existing_user", content="old request"),
-                AIMessage(id="existing_ai", content="old answer"),
+                HumanMessage(id="user_1", content="hello"),
+                activity_msg,
+                AIMessage(id="ai_1", content="reply"),
             ]
         },
         tasks=[],
     )
-    input_data = build_run_input(messages=[{"id": "new_user", "role": "user", "content": "new request"}])
+    input_data = build_run_input(messages=[{"id": "user_1", "role": "user", "content": "hello"}])
     config = {"configurable": {}}
 
-    result = await agent.prepare_stream(input=input_data, agent_state=agent_state, config=config)
+    await agent.prepare_stream(input=input_data, agent_state=agent_state, config=config)
 
-    assert result == {"stream": "regen_stream", "state": "regen_state", "config": "regen_config"}
-    agent.prepare_regenerate_stream.assert_awaited_once()
-    assert agent.prepare_regenerate_stream.await_args.kwargs["message_checkpoint"].id == "new_user"
+    assert activity_msg not in agent_state.values["messages"]
+    assert len(agent_state.values["messages"]) == 2
 
 
 @pytest.mark.asyncio

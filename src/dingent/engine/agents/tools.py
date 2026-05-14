@@ -5,6 +5,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
+from langgraph_swarm.handoff import METADATA_KEY_HANDOFF_DESTINATION
 
 
 # --- Handoff Tool ---
@@ -33,4 +34,5 @@ def create_handoff_tool(agent_name: str, description: str | None, log_method: Ca
             },
         )
 
+    handoff_tool.metadata = {METADATA_KEY_HANDOFF_DESTINATION: agent_name}
     return handoff_tool

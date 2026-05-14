@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from alembic.config import Config as AlembicConfig
 from rich.console import Console
 
 from alembic import command as alembic_command
-from alembic.config import Config as AlembicConfig
 from dingent.core.db.session import create_db_and_tables
 from dingent.core.paths import paths
 

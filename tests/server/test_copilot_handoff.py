@@ -85,15 +85,19 @@ async def test_ding_langgraph_agui_agent_run_executes_tool_before_handoff_and_em
         events.append(event)
 
     tool_results = [event for event in events if event.type == EventType.TOOL_CALL_RESULT]
-    assert len(tool_results) == 2
-    assert [event.content for event in tool_results] == ["lookup result for: Transfer to B", "Transferred to agent_b"]
+    assert len(tool_results) == 3
+    assert [event.content for event in tool_results] == ["lookup result for: Transfer to B", "lookup result for: Transfer to B", "Transferred to agent_b"]
+    assert tool_results[0].tool_call_id == "call_lookup"
+    assert tool_results[1].tool_call_id == "call_lookup"
+    assert tool_results[2].tool_call_id == "call_handoff"
 
     started_steps = [event.step_name for event in events if event.type == EventType.STEP_STARTED]
     assert started_steps.count("tools") >= 2
     assert "agent_b" in started_steps
     assert "model" in started_steps
 
-    snapshot = next(event for event in events if event.type == EventType.MESSAGES_SNAPSHOT)
+    snapshots = [event for event in events if event.type == EventType.MESSAGES_SNAPSHOT]
+    snapshot = snapshots[-1]  # last snapshot has the full conversation
     assert [message.role for message in snapshot.messages] == ["user", "assistant", "tool", "assistant", "tool", "assistant"]
     assert snapshot.messages[1].tool_calls[0].id == "call_lookup"
     assert snapshot.messages[2].content == "lookup result for: Transfer to B"
@@ -120,8 +124,7 @@ async def test_ding_langgraph_agui_agent_run_emits_handoff_and_final_snapshot():
     assert "model" in started_steps
 
     snapshots = [event for event in events if event.type == EventType.MESSAGES_SNAPSHOT]
-    assert len(snapshots) == 1
-    snapshot_messages = snapshots[0].messages
+    snapshot_messages = snapshots[-1].messages  # last snapshot has the full conversation
     assert [message.role for message in snapshot_messages] == ["user", "assistant", "tool", "assistant"]
     assert snapshot_messages[1].tool_calls[0].id == "call_123"
     assert snapshot_messages[2].content == "Transferred to agent_b"
@@ -139,8 +142,8 @@ async def test_ding_langgraph_agui_agent_run_keeps_target_reply_in_snapshot_when
     text_events = [event for event in events if event.type in {EventType.TEXT_MESSAGE_START, EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_END}]
     assert text_events == []
 
-    snapshot = next(event for event in events if event.type == EventType.MESSAGES_SNAPSHOT)
-    assert snapshot.messages[-1].content.endswith("Agent B final response")
+    snapshots = [event for event in events if event.type == EventType.MESSAGES_SNAPSHOT]
+    assert snapshots[-1].messages[-1].content.endswith("Agent B final response")
 
 
 def test_ding_langchain_messages_to_agui_preserves_handoff_messages():

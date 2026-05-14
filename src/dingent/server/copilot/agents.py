@@ -9,14 +9,17 @@ import ag_ui_langgraph
 import ag_ui_langgraph.utils
 from ag_ui.core import (
     ActivityMessage,
-    CustomEvent,
     EventType,
     MessagesSnapshotEvent,
     RunAgentInput,
-    RunFinishedEvent,
+    ThinkingEndEvent,
+    ThinkingStartEvent,
+    ThinkingTextMessageContentEvent,
+    ThinkingTextMessageEndEvent,
+    ThinkingTextMessageStartEvent,
 )
 from ag_ui.core.events import RunStartedEvent
-from ag_ui_langgraph.agent import Command, dump_json_safe, get_stream_payload_input, normalize_tool_content
+from ag_ui_langgraph.agent import Command, normalize_tool_content
 from ag_ui_langgraph.types import LangGraphReasoning
 from ag_ui_langgraph.utils import (
     AGUIAssistantMessage,
@@ -26,7 +29,6 @@ from ag_ui_langgraph.utils import (
     AGUIToolCall,
     AGUIToolMessage,
     AGUIUserMessage,
-    agui_messages_to_langchain,
     convert_agui_multimodal_to_langchain,
     convert_langchain_multimodal_to_agui,
     resolve_message_content,
@@ -341,16 +343,6 @@ def ding_make_json_safe(value: Any, _seen: set[int] | None = None) -> Any:
 ag_ui_langgraph.agent.langchain_messages_to_agui = ding_langchain_messages_to_agui
 ag_ui_langgraph.utils.agui_messages_to_langchain = ding_agui_messages_to_langchain
 ag_ui_langgraph.utils.make_json_safe = ding_make_json_safe
-ag_ui_langgraph.agent.resolve_reasoning_content = ding_resolve_reasoning_content
-
-
-async def graph_aget_state(self, config, *, subgraphs: bool = False):
-    """
-    替换原有的 graph.get_state 方法，去掉ActivityMessage
-    """
-    state = await self._original_aget_state(config, subgraphs=subgraphs)
-    state.values["messages"] = [msg for msg in state.values.get("messages", []) if not msg.type == "activity"]
-    return state
 
 
 class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
@@ -360,6 +352,7 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
 
     async def run(self, input: RunAgentInput, extra_config: dict | None = None) -> AsyncGenerator[str]:
         previous_config = self.config
+        streamed_message_content: dict[str, str] = {}
 
         current_config = previous_config.copy() if previous_config else {}
 
@@ -370,6 +363,21 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
 
         try:
             async for event_str in super().run(input):
+                if getattr(event_str, "type", None) == EventType.TEXT_MESSAGE_CONTENT:
+                    message_id = getattr(event_str, "message_id", None)
+                    delta = getattr(event_str, "delta", None)
+                    if message_id and delta:
+                        streamed_message_content[message_id] = streamed_message_content.get(message_id, "") + delta
+                elif getattr(event_str, "type", None) == EventType.MESSAGES_SNAPSHOT:
+                    for message in getattr(event_str, "messages", []) or []:
+                        if getattr(message, "role", None) != "assistant":
+                            continue
+
+                        message_id = getattr(message, "id", None)
+                        content = getattr(message, "content", None)
+                        if message_id in streamed_message_content and not content:
+                            message.content = streamed_message_content[message_id]
+
                 yield event_str
         finally:
             self.config = previous_config
@@ -400,83 +408,9 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
         )
 
     async def prepare_stream(self, input: RunAgentInput, agent_state, config):
-        state_input = input.state or {}
-        messages = input.messages or []
-        forwarded_props = input.forwarded_props or {}
-        thread_id = input.thread_id
+        agent_state.values["messages"] = [msg for msg in agent_state.values.get("messages", []) if msg.type != "activity"]
 
-        state_input["messages"] = agent_state.values.get("messages", [])
-        self.active_run["current_graph_state"] = agent_state.values.copy()
-        langchain_messages = agui_messages_to_langchain(messages)
-        state = self.langgraph_default_merge_state(state_input, langchain_messages, input)
-        self.active_run["current_graph_state"].update(state)
-        config["configurable"]["thread_id"] = thread_id
-        interrupts = agent_state.tasks[0].interrupts if agent_state.tasks and len(agent_state.tasks) > 0 else []
-        has_active_interrupts = len(interrupts) > 0
-        resume_input = forwarded_props.get("command", {}).get("resume", None)
-
-        self.active_run["schema_keys"] = self.get_schema_keys(config)
-
-        non_system_messages = [msg for msg in langchain_messages if not isinstance(msg, SystemMessage)]
-        messages_without_activities = [msg for msg in agent_state.values.get("messages", []) if not msg.type == "activity"]
-        if len(messages_without_activities) > len(non_system_messages):
-            # Find the last user message by working backwards from the last message
-            last_user_message = None
-            for i in range(len(langchain_messages) - 1, -1, -1):
-                if isinstance(langchain_messages[i], HumanMessage):
-                    last_user_message = langchain_messages[i]
-                    break
-
-            if last_user_message:
-                return await self.prepare_regenerate_stream(input=input, message_checkpoint=last_user_message, config=config)
-
-        events_to_dispatch = []
-        if has_active_interrupts and not resume_input:
-            events_to_dispatch.append(RunStartedEvent(type=EventType.RUN_STARTED, thread_id=thread_id, run_id=self.active_run["id"]))
-
-            for interrupt in interrupts:
-                events_to_dispatch.append(
-                    CustomEvent(
-                        type=EventType.CUSTOM,
-                        name=ag_ui_langgraph.LangGraphEventTypes.OnInterrupt.value,
-                        value=dump_json_safe(interrupt.value),
-                        raw_event=interrupt,
-                    )
-                )
-
-            events_to_dispatch.append(RunFinishedEvent(type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=self.active_run["id"]))
-            return {
-                "stream": None,
-                "state": None,
-                "config": None,
-                "events_to_dispatch": events_to_dispatch,
-            }
-
-        if self.active_run["mode"] == "continue":
-            await self.graph.aupdate_state(config, state, as_node=self.active_run.get("node_name"))
-
-        if resume_input:
-            stream_input = Command(resume=resume_input)
-        else:
-            payload_input = get_stream_payload_input(
-                mode=self.active_run["mode"],
-                state=state,
-                schema_keys=self.active_run["schema_keys"],
-            )
-            stream_input = {**forwarded_props, **payload_input} if payload_input else None
-
-        subgraphs_stream_enabled = input.forwarded_props.get("stream_subgraphs") if input.forwarded_props else False
-
-        kwargs = self.get_stream_kwargs(
-            input=stream_input,
-            config=config,
-            subgraphs=bool(subgraphs_stream_enabled),
-            version="v2",
-        )
-
-        stream = self.graph.astream_events(**kwargs)
-
-        return {"stream": stream, "state": state, "config": config}
+        return await super().prepare_stream(input, agent_state, config)
 
     async def _handle_single_event(self, event: Any, state) -> AsyncGenerator[str]:
         if event.get("event") == ag_ui_langgraph.LangGraphEventTypes.OnToolEnd:
@@ -528,6 +462,47 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
                     )
                 return
 
+    def _emit_thinking_events(self, reasoning_data: LangGraphReasoning):
+        if not reasoning_data or "type" not in reasoning_data or "text" not in reasoning_data:
+            return
+
+        thinking_step_index = reasoning_data.get("index", 0)
+
+        if (
+            self.active_run.get("thinking_process")
+            and self.active_run["thinking_process"].get("index") is not None
+            and self.active_run["thinking_process"]["index"] != thinking_step_index
+        ):
+            thinking_message_id = self.active_run["thinking_process"]["message_id"]
+            if self.active_run["thinking_process"].get("type"):
+                yield self._dispatch_event(ThinkingTextMessageEndEvent(type=EventType.THINKING_TEXT_MESSAGE_END, message_id=thinking_message_id))
+            yield self._dispatch_event(ThinkingEndEvent(type=EventType.THINKING_END, message_id=thinking_message_id))
+            self.active_run["thinking_process"] = None
+
+        if not self.active_run.get("thinking_process"):
+            message_id = str(uuid.uuid4())
+            yield self._dispatch_event(ThinkingStartEvent(type=EventType.THINKING_START, message_id=message_id))
+            self.active_run["thinking_process"] = {"index": thinking_step_index, "message_id": message_id}
+
+        if self.active_run["thinking_process"].get("type") != reasoning_data["type"]:
+            yield self._dispatch_event(
+                ThinkingTextMessageStartEvent(
+                    type=EventType.THINKING_TEXT_MESSAGE_START,
+                    message_id=self.active_run["thinking_process"]["message_id"],
+                )
+            )
+            self.active_run["thinking_process"]["type"] = reasoning_data["type"]
+
+        if self.active_run["thinking_process"].get("type"):
+            yield self._dispatch_event(
+                ThinkingTextMessageContentEvent(
+                    type=EventType.THINKING_TEXT_MESSAGE_CONTENT,
+                    message_id=self.active_run["thinking_process"]["message_id"],
+                    delta=reasoning_data["text"],
+                )
+            )
+
+    async def _handle_single_event(self, event, state):
         # 1. 尝试提取 reasoning_data，用于判断是否命中需要修复的逻辑分支
         # 注意：你需要确保引入了 resolve_reasoning_content 和 LangGraphEventTypes
         event_type = event.get("event")
@@ -538,7 +513,7 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
             reasoning_data = ding_resolve_reasoning_content(chunk)
 
         if reasoning_data:
-            for evt in self.handle_thinking_event(reasoning_data):
+            for evt in self._emit_thinking_events(reasoning_data):
                 yield evt
 
             return

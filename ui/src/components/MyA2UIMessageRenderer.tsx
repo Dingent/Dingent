@@ -1,6 +1,10 @@
-import { type ReactActivityMessageRenderer } from "@copilotkitnext/react";
+import {
+  A2UIProvider,
+  A2UIRenderer,
+  useA2UIActions,
+} from "@copilotkit/a2ui-renderer";
 import { z } from "zod";
-import { memo, useDeferredValue, useMemo, useState } from "react";
+import { memo, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { ColumnDef } from "@tanstack/react-table";
 import remarkGfm from "remark-gfm";
 import ReactMarkdown from "react-markdown";
@@ -18,6 +22,17 @@ import { ErrorBoundary } from "react-error-boundary";
 import { PhotoProvider, PhotoView } from "react-photo-view";
 import "react-photo-view/dist/react-photo-view.css";
 
+type ReactActivityMessageRenderer<TContent = any> = {
+  activityType: string;
+  content: z.ZodType<TContent>;
+  render: React.ComponentType<{
+    activityType: string;
+    content: TContent;
+    message: any;
+    agent: any;
+  }>;
+};
+
 // --- 1. 类型定义 ---
 
 interface TableContent {
@@ -34,6 +49,11 @@ interface MarkdownContent {
 
 // 联合类型
 type A2UIContent = TableContent | MarkdownContent;
+
+interface OfficialA2UIContent {
+  a2ui_operations: Record<string, any>[];
+  surfaceId?: string;
+}
 
 function ErrorFallback({
   error,
@@ -239,6 +259,51 @@ const MarkdownView = memo(
   },
 );
 
+function getSurfaceId(content: OfficialA2UIContent) {
+  if (content.surfaceId) return content.surfaceId;
+
+  for (const operation of content.a2ui_operations) {
+    const surfaceId = operation.createSurface?.surfaceId;
+    if (typeof surfaceId === "string") return surfaceId;
+  }
+
+  return undefined;
+}
+
+function OfficialA2UIRenderer({ content }: { content: OfficialA2UIContent }) {
+  const { processMessages } = useA2UIActions();
+  const surfaceId = getSurfaceId(content);
+
+  useEffect(() => {
+    processMessages(content.a2ui_operations);
+  }, [content.a2ui_operations, processMessages]);
+
+  if (!surfaceId) {
+    return (
+      <div className="p-4 border border-red-200 rounded text-red-500 flex items-center gap-2">
+        <AlertCircle className="w-4 h-4" />
+        <span>A2UI surface id is missing.</span>
+      </div>
+    );
+  }
+
+  return <A2UIRenderer surfaceId={surfaceId} />;
+}
+
+function OfficialA2UISurface({
+  content,
+  theme,
+}: {
+  content: OfficialA2UIContent;
+  theme?: any;
+}) {
+  return (
+    <A2UIProvider theme={theme}>
+      <OfficialA2UIRenderer content={content} />
+    </A2UIProvider>
+  );
+}
+
 // --- 5. 主渲染器工厂函数 ---
 
 export type MessageRendererOptions = {
@@ -267,6 +332,15 @@ export function createA2UIMessageRenderer(
       return (
         <ErrorBoundary FallbackComponent={ErrorFallback}>
           {(() => {
+            if (Array.isArray(content.a2ui_operations)) {
+              return (
+                <OfficialA2UISurface
+                  content={content as OfficialA2UIContent}
+                  theme={options.theme}
+                />
+              );
+            }
+
             const typedContent = content as A2UIContent;
 
             switch (typedContent.type) {

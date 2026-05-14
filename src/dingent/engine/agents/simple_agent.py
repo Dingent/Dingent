@@ -2,6 +2,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, cast
 
+from copilotkit import a2ui
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, TodoListMiddleware
 from langchain.agents.middleware.todo import WRITE_TODOS_SYSTEM_PROMPT, WRITE_TODOS_TOOL_DESCRIPTION, Todo
@@ -15,227 +16,101 @@ from langgraph.types import Command
 from .messages import ActivityMessage
 
 
-def mcp_artifact_to_agui_display(tool_name, query_args: dict, surface_base_id: str | list[str], artifact: list[dict[str, Any]], update_data=False) -> list[dict[str, Any]]:
+def mcp_artifact_to_agui_display(
+    tool_name: str, query_args: dict[str, Any], surface_base_id: str | list[str], artifact: list[dict[str, Any]], update_data: bool = False
+) -> list[dict[str, Any]]:
     if not isinstance(artifact, list):
         return [artifact]
-    agui_display = {"operations": []}
+    agui_display: dict[str, Any] = {"a2ui_operations": [], "surfaceId": None}
 
     if isinstance(surface_base_id, list):
         if len(surface_base_id) != len(artifact):
             raise ValueError("Surface base ID and artifact length mismatch")
 
     for i, item in enumerate(artifact):
-        # 1. 基础渲染信号
         surface_id = f"{surface_base_id}-{i}" if isinstance(surface_base_id, str) else surface_base_id[i]
+        agui_display["surfaceId"] = surface_id
 
         type_ = item.get("type")
         if update_data:
-            columns = item.get("columns", [])  # 预期格式: [{"key": "id", "label": "ID"}, ...]
-            rows = item.get("rows", [])
-            title = item.get("title", "Table Data")
-            a2ui_rows = _transform_rows_to_a2ui(columns, rows)
-            agui_display["operations"].append(
-                {
-                    "dataModelUpdate": {
-                        "surfaceId": surface_id,
-                        "contents": [
-                            {"key": "rows", "valueMap": a2ui_rows},
-                            # 初始化分页状态
-                            {"key": "pageInfo", "valueString": "Page 1"},
-                            {"key": "isFirstPage", "valueBoolean": True},
-                            {"key": "isLastPage", "valueBoolean": False},
-                        ],
-                    }
-                }
-            )
+            operations = [a2ui.update_data_model(surface_id, _build_table_data(item, query_args))]
+            agui_display["a2ui_operations"].extend(json.loads(a2ui.render(operations))["a2ui_operations"])
             break
 
-        # === 处理文本类型 ===
         if type_ == "text":
-            raise NotImplementedError("Text type rendering not implemented in this snippet.")
+            title = str(item.get("title") or "Result")
+            content = str(item.get("content") or "")
+            components = [
+                {"id": "root", "component": "Column", "children": ["title", "content"], "align": "stretch", "justify": "start"},
+                {"id": "title", "component": "Text", "text": title, "variant": "h3"},
+                {"id": "content", "component": "Text", "text": content},
+            ]
+            data: dict[str, Any] = {"title": title, "content": content}
 
-        # === 处理表格类型 ===
         elif type_ == "table":
-            columns = item.get("columns", [])  # 预期格式: [{"key": "id", "label": "ID"}, ...]
-            rows = item.get("rows", [])
-            title = item.get("title", "Table Data")
+            components = _build_table_components(tool_name, query_args, item)
+            data = _build_table_data(item, query_args)
+        else:
+            continue
 
-            # --- A. 动态构建组件列表 ---
-            components = []
-
-            # 1. Root Container (包含标题、表头、列表、分页)
-            components.append(
-                {
-                    "id": "root",
-                    "component": {
-                        "Column": {"children": {"explicitList": ["tableTitle", "tableHeader", "tableBody", "paginationRow"]}, "alignment": "stretch", "distribution": "start"}
-                    },
-                }
-            )
-
-            # 2. Table Title
-            components.append({"id": "tableTitle", "component": {"Text": {"text": {"literalString": title}, "usageHint": "h3"}}})
-
-            # 3. 动态表头 (Header Row)
-            header_child_ids = []
-            for col in columns:
-                col_id = f"header_{col}"
-                header_child_ids.append(col_id)
-                components.append(
-                    {
-                        "id": col_id,
-                        "component": {
-                            "Text": {
-                                "text": {"literalString": col},
-                                "usageHint": "caption",
-                                "weight": 1,  # 均匀分布
-                            }
-                        },
-                    }
-                )
-
-            components.append({"id": "tableHeader", "component": {"Row": {"children": {"explicitList": header_child_ids}, "distribution": "spaceBetween", "alignment": "center"}}})
-
-            # 4. 动态行模板 (Row Template)
-            # 这里是关键：template 中的组件绑定相对路径
-            row_child_ids = []
-            for col in columns:
-                cell_id = f"cell_{col}"
-                row_child_ids.append(cell_id)
-                components.append(
-                    {
-                        "id": cell_id,
-                        "component": {
-                            "Text": {
-                                # 动态绑定：如果列key是 "email"，路径就是 "/email"
-                                "text": {"path": f"/{col}"},
-                                "weight": 1,
-                            }
-                        },
-                    }
-                )
-
-            components.append({"id": "rowTemplate", "component": {"Row": {"children": {"explicitList": row_child_ids}, "distribution": "spaceBetween", "alignment": "center"}}})
-
-            # 5. 列表容器 (The List)
-            components.append(
-                {
-                    "id": "tableBody",
-                    "component": {
-                        "List": {
-                            "children": {
-                                "template": {
-                                    "componentId": "rowTemplate",
-                                    "dataBinding": "/rows",  # 绑定到数据模型的 /rows 数组
-                                }
-                            },
-                            "direction": "vertical",
-                        }
-                    },
-                }
-            )
-
-            # 6. 分页控件
-            page_number = int(query_args.get("page", 1))
-            components.extend(
-                [
-                    {
-                        "id": "paginationRow",
-                        "component": {"Row": {"children": {"explicitList": ["prevBtn", "pageInfo", "nextBtn"]}, "distribution": "center", "alignment": "center"}},
-                    },
-                    {
-                        "id": "prevBtn",
-                        "component": {
-                            "Button": {
-                                "child": "prevBtnText",
-                                "action": {
-                                    "name": tool_name,
-                                    "context": [
-                                        {
-                                            "key": "query_args",
-                                            "value": {"literalString": json.dumps({**query_args, "page": page_number})},
-                                        }
-                                    ],
-                                },
-                                "disabled": {"path": "/isFirstPage"},
-                            }
-                        },
-                    },
-                    {"id": "prevBtnText", "component": {"Text": {"text": {"literalString": "Previous"}}}},
-                    {"id": "pageInfo", "component": {"Text": {"text": {"path": "/pageInfo"}, "usageHint": "caption"}}},
-                    {
-                        "id": "nextBtn",
-                        "component": {
-                            "Button": {
-                                "child": "nextBtnText",
-                                "action": {
-                                    "name": tool_name,
-                                    "context": [
-                                        {
-                                            "key": "query_args",
-                                            "value": {"literalString": json.dumps({**query_args, "page": page_number + 2})},
-                                        }
-                                    ],
-                                },
-                                "disabled": {"path": "/isLastPage"},
-                            }
-                        },
-                    },
-                    {"id": "nextBtnText", "component": {"Text": {"text": {"literalString": "Next"}}}},
-                ]
-            )
-
-            # 添加 SurfaceUpdate 消息
-            agui_display["operations"].append({"surfaceUpdate": {"surfaceId": surface_id, "components": components}})
-
-            # --- B. 数据模型转换 ---
-            # 将 Python 字典列表转换为 A2UI 的 adjacency list 格式
-            a2ui_rows = _transform_rows_to_a2ui(columns, rows)
-
-            # 添加 DataModelUpdate 消息
-            agui_display["operations"].append(
-                {
-                    "dataModelUpdate": {
-                        "surfaceId": surface_id,
-                        "contents": [
-                            {"key": "rows", "valueMap": a2ui_rows},
-                            # 初始化分页状态
-                            {"key": "pageInfo", "valueString": "Page 1"},
-                            {"key": "isFirstPage", "valueBoolean": True},
-                            {"key": "isLastPage", "valueBoolean": False},
-                        ],
-                    }
-                }
-            )
-        if not update_data:
-            agui_display["operations"].append({"beginRendering": {"surfaceId": surface_id, "root": "root", "styles": {"primaryColor": "#1976D2", "font": "Roboto"}}})
+        operations = [a2ui.create_surface(surface_id), a2ui.update_components(surface_id, components), a2ui.update_data_model(surface_id, data)]
+        agui_display["a2ui_operations"].extend(json.loads(a2ui.render(operations))["a2ui_operations"])
 
     return [agui_display]
 
 
-def _transform_rows_to_a2ui(columns: list[str], rows: list[list[str | int | Any]]) -> list[dict]:
-    """
-    辅助函数：将 [{'id': 1, 'name': 'A'}] 转换为 A2UI 的 valueMap 结构
-    A2UI 数组本质上是一个 Map，Key 是索引字符串 "0", "1", ...
-    """
-    a2ui_list = []
-    for idx, row_data in enumerate(rows):
-        # 构建每一行的数据对象
-        row_fields = []
-        for k, v in zip(columns, row_data, strict=False):
-            entry: dict[str, Any] = {"key": k}
-            # 根据类型填充 valueString, valueNumber 等
-            if isinstance(v, bool):
-                entry["valueBoolean"] = v
-            elif isinstance(v, int | float):
-                entry["valueNumber"] = v
-            else:
-                entry["valueString"] = str(v)
-            row_fields.append(entry)
+def _build_table_components(tool_name: str, query_args: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
+    columns = [str(column) for column in item.get("columns", [])]
+    rows = _table_rows_to_records(columns, item.get("rows", []))
+    title = str(item.get("title") or "Table Data")
+    page_number = int(query_args.get("page", 1))
 
-        # 将行数据放入列表，Key 是索引
-        a2ui_list.append({"key": str(idx), "valueMap": row_fields})
-    return a2ui_list
+    components: list[dict[str, Any]] = [
+        {"id": "root", "component": "Column", "children": ["tableTitle", "tableHeader", *[f"row_{idx}" for idx in range(len(rows))], "paginationRow"], "align": "stretch"},
+        {"id": "tableTitle", "component": "Text", "text": title, "variant": "h3"},
+        {"id": "tableHeader", "component": "Row", "children": [f"header_{idx}" for idx in range(len(columns))], "justify": "spaceBetween", "align": "center"},
+        {"id": "paginationRow", "component": "Row", "children": ["prevBtn", "pageInfo", "nextBtn"], "justify": "center", "align": "center"},
+        {"id": "prevBtn", "component": "Button", "child": "prevBtnText", "action": {"event": {"name": tool_name, "context": {"query_args": {**query_args, "page": page_number}}}}},
+        {"id": "prevBtnText", "component": "Text", "text": "Previous"},
+        {"id": "pageInfo", "component": "Text", "text": f"Page {page_number}", "variant": "caption"},
+        {
+            "id": "nextBtn",
+            "component": "Button",
+            "child": "nextBtnText",
+            "action": {"event": {"name": tool_name, "context": {"query_args": {**query_args, "page": page_number + 2}}}},
+        },
+        {"id": "nextBtnText", "component": "Text", "text": "Next"},
+    ]
+
+    for idx, column in enumerate(columns):
+        components.append({"id": f"header_{idx}", "component": "Text", "text": column, "variant": "caption"})
+
+    for row_idx, row in enumerate(rows):
+        row_child_ids = []
+        for col_idx, column in enumerate(columns):
+            cell_id = f"row_{row_idx}_cell_{col_idx}"
+            row_child_ids.append(cell_id)
+            components.append({"id": cell_id, "component": "Text", "text": str(row.get(column, ""))})
+        components.append({"id": f"row_{row_idx}", "component": "Row", "children": row_child_ids, "justify": "spaceBetween", "align": "center"})
+
+    return components
+
+
+def _build_table_data(item: dict[str, Any], query_args: dict[str, Any]) -> dict[str, Any]:
+    columns = [str(column) for column in item.get("columns", [])]
+    page_number = int(query_args.get("page", 1))
+    return {
+        "title": str(item.get("title") or "Table Data"),
+        "columns": columns,
+        "rows": _table_rows_to_records(columns, item.get("rows", [])),
+        "pageInfo": f"Page {page_number}",
+        "isFirstPage": page_number <= 1,
+        "isLastPage": False,
+    }
+
+
+def _table_rows_to_records(columns: list[str], rows: list[list[str | int | Any]]) -> list[dict[str, Any]]:
+    return [dict(zip(columns, row_data, strict=False)) for row_data in rows]
 
 
 class DingMiddleware(AgentMiddleware):
@@ -358,15 +233,14 @@ def build_simple_react_agent(
     llm: BaseChatModel,
     tools: list[BaseTool],
     system_prompt: str | None = None,
-    max_iterations: int = 6,  # noqa: ARG001
+    debug: bool = False,
 ) -> CompiledStateGraph:
-    # 使用 create_react_agent 并传入 middleware
     agent = create_agent(
         model=llm,
         tools=tools,
         system_prompt=system_prompt,
         middleware=middleware,
-        debug=True,
+        debug=debug,
     )
     agent.name = name
     return agent

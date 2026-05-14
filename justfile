@@ -29,6 +29,14 @@ install:
     @echo "Installing all monorepo dependencies..."
     @bun install --frozen-lockfile
 
+test:
+    @echo "Running backend tests..."
+    @uv run pytest
+    @echo "Running frontend unit tests..."
+    @(cd ui/ && bun install && bun run test)
+    @echo "Running Playwright e2e tests..."
+    @(cd ui/ && bun run test:e2e)
+
 _build-ui:
     @echo "Building Frontend (Standalone)..."
     @(cd ui/ && bun install && bun run build)

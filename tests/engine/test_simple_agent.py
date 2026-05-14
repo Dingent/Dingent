@@ -2,38 +2,31 @@ import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
-from dingent.engine.agents.simple_agent import DingMiddleware, _transform_rows_to_a2ui
+from dingent.engine.agents.simple_agent import DingMiddleware, mcp_artifact_to_agui_display
 
 
-def test_transform_rows_to_a2ui():
-    columns = ["id", "name", "active", "score"]
-    rows = [[1, "Alice", True, 95.5], [2, "Bob", False, 88.0]]
+def test_mcp_artifact_to_agui_display_builds_official_a2ui_operations():
+    artifact = [{"type": "table", "title": "Users", "columns": ["id", "name", "active", "score"], "rows": [[1, "Alice", True, 95.5], [2, "Bob", False, 88.0]]}]
 
-    result = _transform_rows_to_a2ui(columns, rows)
+    result = mcp_artifact_to_agui_display("test_tool", {"page": 1}, "surface", artifact)
 
-    # Check length
-    assert len(result) == 2
+    assert len(result) == 1
+    content = result[0]
+    assert content["surfaceId"] == "surface-0"
 
-    # Check Row 1
-    row1 = result[0]
-    assert row1["key"] == "0"
-    fields1 = row1["valueMap"]
-    assert len(fields1) == 4
+    operations = content["a2ui_operations"]
+    assert operations[0]["createSurface"]["surfaceId"] == "surface-0"
+    assert operations[1]["updateComponents"]["surfaceId"] == "surface-0"
+    assert operations[2]["updateDataModel"]["surfaceId"] == "surface-0"
 
-    assert fields1[0] == {"key": "id", "valueNumber": 1}
-    assert fields1[1] == {"key": "name", "valueString": "Alice"}
-    assert fields1[2] == {"key": "active", "valueBoolean": True}
-    assert fields1[3] == {"key": "score", "valueNumber": 95.5}
+    components = operations[1]["updateComponents"]["components"]
+    assert {component["id"] for component in components} >= {"root", "tableTitle", "tableHeader", "row_0", "row_1", "paginationRow"}
 
-    # Check Row 2
-    row2 = result[1]
-    assert row2["key"] == "1"
-    fields2 = row2["valueMap"]
-    assert len(fields2) == 4
-    assert fields2[0] == {"key": "id", "valueNumber": 2}
-    assert fields2[1] == {"key": "name", "valueString": "Bob"}
-    assert fields2[2] == {"key": "active", "valueBoolean": False}
-    assert fields2[3] == {"key": "score", "valueNumber": 88.0}
+    data = operations[2]["updateDataModel"]["value"]
+    assert data["title"] == "Users"
+    assert data["columns"] == ["id", "name", "active", "score"]
+    assert data["rows"] == [{"id": 1, "name": "Alice", "active": True, "score": 95.5}, {"id": 2, "name": "Bob", "active": False, "score": 88.0}]
+    assert data["pageInfo"] == "Page 1"
 
 
 @pytest.mark.asyncio
