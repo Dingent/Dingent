@@ -10,11 +10,25 @@ from langchain.agents.middleware.types import ModelCallResult, ToolCallRequest
 from langchain.tools import BaseTool, InjectedToolCallId, tool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_litellm.chat_models import litellm as langchain_litellm_chat_models
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 from loguru import logger
 
 from .messages import ActivityMessage
+
+_ORIGINAL_CONVERT_MESSAGE_TO_DICT = langchain_litellm_chat_models._convert_message_to_dict
+
+
+def _convert_message_to_dict_with_reasoning_content(message: AnyMessage) -> dict[str, Any]:
+    message_dict = _ORIGINAL_CONVERT_MESSAGE_TO_DICT(message)
+    reasoning_content = message.additional_kwargs.get("reasoning_content") if isinstance(message, AIMessage) else None
+    if reasoning_content and "reasoning_content" not in message_dict:
+        message_dict["reasoning_content"] = reasoning_content
+    return message_dict
+
+
+langchain_litellm_chat_models._convert_message_to_dict = _convert_message_to_dict_with_reasoning_content
 
 
 def mcp_artifact_to_agui_display(
@@ -120,18 +134,27 @@ def _normalize_openai_content_blocks(message: AnyMessage) -> AnyMessage:
         return message
 
     normalized_content: list[Any] = []
+    reasoning_content: list[str] = []
     changed = False
     for block in content:
         if isinstance(block, str):
             changed = True
             if block.strip():
                 normalized_content.append({"type": "text", "text": block})
+        elif isinstance(block, dict) and block.get("type") == "thinking":
+            changed = True
+            thinking_text = block.get("thinking") or block.get("text") or block.get("content")
+            if isinstance(thinking_text, str) and thinking_text.strip():
+                reasoning_content.append(thinking_text)
         else:
             normalized_content.append(block)
 
     if not changed:
         return message
-    return message.model_copy(update={"content": normalized_content or ""})
+    update: dict[str, Any] = {"content": normalized_content or ""}
+    if isinstance(message, AIMessage) and reasoning_content and not message.additional_kwargs.get("reasoning_content"):
+        update["additional_kwargs"] = {**message.additional_kwargs, "reasoning_content": "\n".join(reasoning_content)}
+    return message.model_copy(update=update)
 
 
 def _message_type_counts(messages: list[AnyMessage]) -> dict[str, int]:

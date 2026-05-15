@@ -540,7 +540,6 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
             reasoning_data = ding_resolve_reasoning_content(chunk)
 
         if reasoning_data:
-            logger.debug("AG-UI reasoning chunk emitted: agent={}, event_type={}, reasoning_type={}", self.name, event_type, reasoning_data.get("type"))
             for evt in self._emit_thinking_events(reasoning_data):
                 yield evt
 

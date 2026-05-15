@@ -1,7 +1,8 @@
 from typing import Any, cast
 
 import pytest
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_litellm.chat_models import litellm as langchain_litellm_chat_models
 from langgraph.types import Command
 
 from dingent.engine.agents.simple_agent import DingMiddleware, mcp_artifact_to_agui_display
@@ -47,6 +48,41 @@ async def test_ding_middleware_awrap_model_call_normalizes_string_content_blocks
 
     async def mock_handler(req: Any) -> str:
         assert req.messages[0].content == [{"type": "text", "text": "hello"}, {"type": "text", "text": "world"}]
+        assert req.model_settings["parallel_tool_calls"] is False
+        return "ok"
+
+    result = await middleware.awrap_model_call(cast(Any, MockRequest()), cast(Any, mock_handler))
+
+    assert result == "ok"
+
+
+def test_litellm_message_conversion_preserves_reasoning_content():
+    message = AIMessage(
+        content=[{"type": "thinking", "thinking": "private reasoning"}, {"type": "text", "text": "hello"}], additional_kwargs={"reasoning_content": "private reasoning"}
+    )
+
+    message_dict = langchain_litellm_chat_models._convert_message_to_dict(message)
+
+    assert message_dict["reasoning_content"] == "private reasoning"
+
+
+@pytest.mark.asyncio
+async def test_ding_middleware_awrap_model_call_moves_thinking_blocks_to_reasoning_content():
+    middleware = DingMiddleware()
+    assistant_message = AIMessage(content=[{"type": "thinking", "thinking": "private reasoning"}, {"type": "text", "text": "hello"}])
+
+    class MockRequest:
+        messages = [assistant_message]
+        model_settings = {}
+
+        def override(self, **kwargs):
+            self.messages = kwargs.get("messages", self.messages)
+            self.model_settings = kwargs.get("model_settings", self.model_settings)
+            return self
+
+    async def mock_handler(req: Any) -> str:
+        assert req.messages[0].content == [{"type": "text", "text": "hello"}]
+        assert req.messages[0].additional_kwargs["reasoning_content"] == "private reasoning"
         assert req.model_settings["parallel_tool_calls"] is False
         return "ok"
 
