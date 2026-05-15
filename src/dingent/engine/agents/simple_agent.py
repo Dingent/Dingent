@@ -37,6 +37,7 @@ def mcp_artifact_to_agui_display(
     if not isinstance(artifact, list):
         return [artifact]
     agui_display: dict[str, Any] = {"a2ui_operations": [], "surfaceId": None}
+    display_messages: list[dict[str, Any]] = []
 
     if isinstance(surface_base_id, list):
         if len(surface_base_id) != len(artifact):
@@ -52,15 +53,15 @@ def mcp_artifact_to_agui_display(
             agui_display["a2ui_operations"].extend(json.loads(a2ui.render(operations))["a2ui_operations"])
             break
 
-        if type_ == "text":
-            title = str(item.get("title") or "Result")
-            content = str(item.get("content") or "")
-            components = [
-                {"id": "root", "component": "Column", "children": ["title", "content"], "align": "stretch", "justify": "start"},
-                {"id": "title", "component": "Text", "text": title, "variant": "h3"},
-                {"id": "content", "component": "Text", "text": content},
-            ]
-            data: dict[str, Any] = {"title": title, "content": content}
+        if type_ in {"markdown", "text"}:
+            display_messages.append(
+                {
+                    "type": "markdown",
+                    "title": str(item.get("title") or "Result"),
+                    "content": str(item.get("content") or ""),
+                }
+            )
+            continue
 
         elif type_ == "table":
             components = _build_table_components(tool_name, query_args, item)
@@ -71,7 +72,10 @@ def mcp_artifact_to_agui_display(
         operations = [a2ui.create_surface(surface_id), a2ui.update_components(surface_id, components), a2ui.update_data_model(surface_id, data)]
         agui_display["a2ui_operations"].extend(json.loads(a2ui.render(operations))["a2ui_operations"])
 
-    return [agui_display]
+    if agui_display["a2ui_operations"]:
+        display_messages.append(agui_display)
+
+    return display_messages
 
 
 def _build_table_components(tool_name: str, query_args: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
@@ -245,7 +249,7 @@ class DingMiddleware(AgentMiddleware):
                         surface_base_id=tool_call_id,
                         artifact=artifact,
                     )
-                    collected_messages.append(ActivityMessage(content=agui_display))
+                    collected_messages.append(ActivityMessage(id=f"{tool_call_id}:activity", content=agui_display))
 
                 logger.info(
                     "Agent tool call completed: tool_name={}, tool_call_id={}, result_type=ToolMessage, has_artifact={}, emitted_messages={}",

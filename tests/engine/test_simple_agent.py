@@ -32,6 +32,14 @@ def test_mcp_artifact_to_agui_display_builds_official_a2ui_operations():
     assert data["pageInfo"] == "Page 1"
 
 
+def test_mcp_artifact_to_agui_display_keeps_markdown_payload_for_client_renderer():
+    artifact = [{"type": "markdown", "title": "QC Analysis Result", "content": "### Result\n- Passed"}]
+
+    result = mcp_artifact_to_agui_display("test_tool", {}, "surface", artifact)
+
+    assert result == [{"type": "markdown", "title": "QC Analysis Result", "content": "### Result\n- Passed"}]
+
+
 @pytest.mark.asyncio
 async def test_ding_middleware_awrap_model_call_normalizes_string_content_blocks():
     middleware = DingMiddleware()
@@ -123,6 +131,8 @@ async def test_ding_middleware_awrap_tool_call_with_tool_message():
     assert isinstance(messages[0], ToolMessage)
     assert messages[0].content == "Here is the table"
     assert messages[0].tool_call_id == "call_123"
+    assert messages[1].id == "call_123:activity"
+    assert messages[1].type == "activity"
 
 
 @pytest.mark.asyncio

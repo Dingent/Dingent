@@ -1,13 +1,28 @@
 import uuid
 
-from ag_ui.core import EventType, MessagesSnapshotEvent, RunFinishedEvent
+import pytest
+from ag_ui.core import EventType, MessagesSnapshotEvent, RunAgentInput, RunFinishedEvent
 from ag_ui.core.events import RunStartedEvent
 from ag_ui.encoder import EventEncoder
 from ag_ui_langgraph.utils import AGUIAssistantMessage
 from fastapi.testclient import TestClient
+from langchain_core.language_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph_swarm import create_swarm
 from sqlmodel import select
 
 from dingent.core.db.models import Conversation, Workspace
+from dingent.engine.agents.simple_agent import build_simple_react_agent
+from dingent.engine.agents.state import MainState
+from dingent.engine.agents.tools import create_handoff_tool
+from dingent.server.copilot.agents import DingLangGraphAGUIAgent
+
+
+class FakeMessagesListChatModelWithTools(FakeMessagesListChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
 
 
 def _create_workspace(*, session, slug: str, allow_guest_access: bool) -> Workspace:
@@ -229,6 +244,183 @@ def test_run_streams_agent_events_and_updates_conversation_title(client: TestCli
     conversation = session.exec(select(Conversation).where(Conversation.id == uuid.UUID(thread_id))).one()
     assert conversation.title == "Streaming title"
     assert conversation.visitor_id == visitor_id
+
+
+def test_run_streams_tool_call_events_for_frontend(client: TestClient, session, monkeypatch):
+    ws = _create_workspace(session=session, slug="ws-tool-events", allow_guest_access=True)
+    thread_id = str(uuid.uuid4())
+    visitor_id = str(uuid.uuid4())
+
+    handoff_tool = create_handoff_tool("agent_b", "Agent B can finish the answer", lambda *args, **kwargs: None)
+    llm_a = FakeMessagesListChatModelWithTools(responses=[AIMessage(content="", tool_calls=[{"name": "transfer_to_agent_b", "args": {}, "id": "call_handoff"}])])
+    agent_a = build_simple_react_agent("agent_a", llm_a, tools=[handoff_tool], system_prompt="You are Agent A")
+    llm_b = FakeMessagesListChatModelWithTools(responses=[AIMessage(content="Agent B final answer")])
+    agent_b = build_simple_react_agent("agent_b", llm_b, tools=[], system_prompt="You are Agent B")
+    graph = create_swarm(
+        agents=[agent_a, agent_b],
+        state_schema=MainState,
+        default_active_agent="agent_a",
+        context_schema=dict,
+    ).compile(checkpointer=InMemorySaver())
+    agent = DingLangGraphAGUIAgent(name="test", graph=graph)
+
+    class _DummyAgent:
+        async def run(self, _input):
+            async for event in agent.run(_input):
+                yield event
+
+    class _DummySDK:
+        async def resolve_agent(self, _spec, _llm):
+            return _DummyAgent()
+
+    from dingent.core.llms import service as llm_service
+    from dingent.server.api.routers.frontend import threads as chat_threads
+
+    monkeypatch.setattr(llm_service, "get_llm_for_context", lambda **_kwargs: object())
+    client.app.dependency_overrides[chat_threads.get_copilot_sdk] = lambda: _DummySDK()
+
+    payload = {
+        "threadId": thread_id,
+        "runId": "run-1",
+        "parentRunId": None,
+        "state": {},
+        "messages": [{"id": "m1", "role": "user", "content": "hello"}],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {},
+    }
+
+    response = client.post(
+        f"/api/v1/{ws.slug}/chat/agent/default/run",
+        json=payload,
+        headers={"Accept": "text/event-stream", "X-Visitor-ID": visitor_id},
+    )
+
+    assert response.status_code == 200
+    assert "TOOL_CALL_START" in response.text
+    assert "TOOL_CALL_ARGS" in response.text
+    assert "TOOL_CALL_END" in response.text
+    assert "TOOL_CALL_RESULT" in response.text
+    assert response.text.index("TOOL_CALL_START") < response.text.index("TOOL_CALL_ARGS") < response.text.index("TOOL_CALL_END") < response.text.index("TOOL_CALL_RESULT")
+    assert "call_handoff" in response.text
+    assert "Transferred to agent_b" in response.text
+
+
+def test_run_streams_activity_snapshot_events_for_frontend_a2ui_components(client: TestClient, session, monkeypatch):
+    ws = _create_workspace(session=session, slug="ws-activity-events", allow_guest_access=True)
+    thread_id = str(uuid.uuid4())
+    visitor_id = str(uuid.uuid4())
+
+    @tool
+    def table_tool() -> ToolMessage:
+        """Return table data for the frontend activity surface."""
+        return ToolMessage(
+            content="table ready",
+            tool_call_id="call_table",
+            artifact={
+                "structured_content": {
+                    "model_text": "Here is the table",
+                    "display": [{"type": "table", "title": "Users", "columns": ["name"], "rows": [["Alice"]]}],
+                }
+            },
+        )
+
+    llm = FakeMessagesListChatModelWithTools(
+        responses=[
+            AIMessage(content="", tool_calls=[{"name": "table_tool", "args": {}, "id": "call_table"}]),
+            AIMessage(content="Done"),
+        ]
+    )
+    agent_graph = build_simple_react_agent("agent", llm, tools=[table_tool], system_prompt="You are Agent")
+    graph = create_swarm(agents=[agent_graph], state_schema=MainState, default_active_agent="agent", context_schema=dict).compile(checkpointer=InMemorySaver())
+    agent = DingLangGraphAGUIAgent(name="test", graph=graph)
+
+    class _DummyAgent:
+        async def run(self, _input):
+            async for event in agent.run(_input):
+                yield event
+
+    class _DummySDK:
+        async def resolve_agent(self, _spec, _llm):
+            return _DummyAgent()
+
+    from dingent.core.llms import service as llm_service
+    from dingent.server.api.routers.frontend import threads as chat_threads
+
+    monkeypatch.setattr(llm_service, "get_llm_for_context", lambda **_kwargs: object())
+    client.app.dependency_overrides[chat_threads.get_copilot_sdk] = lambda: _DummySDK()
+
+    payload = {
+        "threadId": thread_id,
+        "runId": "run-1",
+        "parentRunId": None,
+        "state": {},
+        "messages": [{"id": "m1", "role": "user", "content": "show table"}],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {},
+    }
+
+    response = client.post(
+        f"/api/v1/{ws.slug}/chat/agent/default/run",
+        json=payload,
+        headers={"Accept": "text/event-stream", "X-Visitor-ID": visitor_id},
+    )
+
+    assert response.status_code == 200
+    assert "TOOL_CALL_RESULT" in response.text
+    assert "ACTIVITY_SNAPSHOT" in response.text
+    assert response.text.index("ACTIVITY_SNAPSHOT") < response.text.rindex("MESSAGES_SNAPSHOT")
+    assert '"role":"activity"' in response.text
+    assert "a2ui-surface" in response.text
+    assert "a2ui_operations" in response.text
+    assert "call_table-0" in response.text
+
+
+@pytest.mark.asyncio
+async def test_activity_snapshot_streams_before_tool_step_finishes():
+    @tool
+    def table_tool() -> ToolMessage:
+        """Return table data for the frontend activity surface."""
+        return ToolMessage(
+            content="table ready",
+            tool_call_id="call_table",
+            artifact={
+                "structured_content": {
+                    "model_text": "Here is the table",
+                    "display": [{"type": "table", "title": "Users", "columns": ["name"], "rows": [["Alice"]]}],
+                }
+            },
+        )
+
+    llm = FakeMessagesListChatModelWithTools(
+        responses=[
+            AIMessage(content="", tool_calls=[{"name": "table_tool", "args": {}, "id": "call_table"}]),
+            AIMessage(content="Done"),
+        ]
+    )
+    agent_graph = build_simple_react_agent("agent", llm, tools=[table_tool], system_prompt="You are Agent")
+    graph = create_swarm(agents=[agent_graph], state_schema=MainState, default_active_agent="agent", context_schema=dict).compile(checkpointer=InMemorySaver())
+    agent = DingLangGraphAGUIAgent(name="test", graph=graph)
+
+    input_data = RunAgentInput(
+        threadId=str(uuid.uuid4()),
+        runId="run-1",
+        state={},
+        messages=[{"id": "m1", "role": "user", "content": "show table"}],
+        tools=[],
+        context=[],
+        forwardedProps={},
+    )
+
+    events = [event async for event in agent.run(input_data)]
+    event_types = [event.type for event in events]
+    tool_result_index = event_types.index(EventType.TOOL_CALL_RESULT)
+    activity_index = event_types.index(EventType.ACTIVITY_SNAPSHOT)
+    next_step_finished_index = event_types.index(EventType.STEP_FINISHED, tool_result_index)
+
+    assert activity_index > tool_result_index
+    assert activity_index < next_step_finished_index
 
 
 def test_connect_streams_thread_snapshot_events(client: TestClient, session, monkeypatch):

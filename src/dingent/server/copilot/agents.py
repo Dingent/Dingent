@@ -9,9 +9,11 @@ import ag_ui_langgraph
 import ag_ui_langgraph.utils
 from ag_ui.core import (
     ActivityMessage,
+    ActivitySnapshotEvent,
     EventType,
     MessagesSnapshotEvent,
     RunAgentInput,
+    StateSnapshotEvent,
     ThinkingEndEvent,
     ThinkingStartEvent,
     ThinkingTextMessageContentEvent,
@@ -39,6 +41,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 from loguru import logger
 
 from dingent.engine.agents import messages as DingMessages
+from dingent.engine.agents.simple_agent import mcp_artifact_to_agui_display
 
 
 class DingRunAgentInput(RunAgentInput):
@@ -115,7 +118,7 @@ def ding_langchain_messages_to_agui(messages: list[BaseMessage]):
                 agui_messages.append(
                     ActivityMessage(
                         activity_type="a2ui-surface",
-                        id=str(uuid.uuid4()),
+                        id=str(message.id or uuid.uuid4()),
                         content=message.content[0],
                     )
                 )
@@ -422,7 +425,20 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
             )
         )
         yield self._dispatch_event(
-            MessagesSnapshotEvent(type=EventType.MESSAGES_SNAPSHOT, messages=ag_ui_langgraph.agent.langchain_messages_to_agui(messages)),
+            MessagesSnapshotEvent(type=EventType.MESSAGES_SNAPSHOT, messages=ding_langchain_messages_to_agui(messages)),
+        )
+
+    async def get_state_and_messages_snapshots(self, config) -> AsyncGenerator[Any]:
+        state = await self.graph.aget_state(config)
+        state_values = state.values or {}
+        yield self._dispatch_event(StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=self.get_state_snapshot(state_values)))
+
+        snapshot_messages = self._filter_orphan_tool_messages(state_values.get("messages", []))
+        yield self._dispatch_event(
+            MessagesSnapshotEvent(
+                type=EventType.MESSAGES_SNAPSHOT,
+                messages=ding_langchain_messages_to_agui(snapshot_messages),
+            )
         )
 
     async def prepare_stream(self, input: RunAgentInput, agent_state, config):
@@ -439,12 +455,13 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
 
         return await super().prepare_stream(input, agent_state, config)
 
-    async def _handle_single_event(self, event: Any, state) -> AsyncGenerator[str]:
+    async def _handle_command_tool_end_event(self, event: Any) -> AsyncGenerator[str]:
         if event.get("event") == ag_ui_langgraph.LangGraphEventTypes.OnToolEnd:
             tool_call_output = event.get("data", {}).get("output")
             if isinstance(tool_call_output, Command):
                 messages = tool_call_output.update.get("messages", [])
                 tool_messages = [message for message in messages if isinstance(message, ToolMessage)]
+                activity_messages = [message for message in messages if getattr(message, "type", None) == "activity"]
 
                 # History-preserving Commands (such as handoff) may include prior tool messages.
                 # Only the newly appended tool result belongs to the current OnToolEnd event.
@@ -487,7 +504,89 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
                             role="tool",
                         )
                     )
+
+                for activity_msg in activity_messages:
+                    for snapshot_event in self._emit_activity_snapshot_events(activity_msg, event):
+                        yield snapshot_event
                 return
+
+    def _emit_activity_snapshot_events(self, activity_msg: BaseMessage, raw_event: Any) -> list[Any]:
+        if self.active_run is None:
+            return []
+
+        emitted_ids = self.active_run.setdefault("emitted_activity_message_ids", set())
+        contents = activity_msg.content if isinstance(activity_msg.content, list) else [activity_msg.content]
+        message_id = str(activity_msg.id or uuid.uuid4())
+        events = []
+        for index, content in enumerate(contents):
+            if not isinstance(content, dict):
+                continue
+
+            content_message_id = message_id if len(contents) == 1 else f"{message_id}:{index}"
+            if content_message_id in emitted_ids:
+                continue
+
+            emitted_ids.add(content_message_id)
+            events.append(
+                self._dispatch_event(
+                    ActivitySnapshotEvent(
+                        type=EventType.ACTIVITY_SNAPSHOT,
+                        message_id=content_message_id,
+                        activity_type="a2ui-surface",
+                        content=content,
+                        raw_event=raw_event,
+                    )
+                )
+            )
+
+        return events
+
+    def _emit_state_activity_snapshot_events(self, state: Any, raw_event: Any) -> list[Any]:
+        if not isinstance(state, dict):
+            return []
+
+        messages = state.get("messages", [])
+        return [event for message in messages if getattr(message, "type", None) == "activity" for event in self._emit_activity_snapshot_events(message, raw_event)]
+
+    def _emit_tool_output_activity_snapshot_events(self, event: Any) -> list[Any]:
+        if event.get("event") != ag_ui_langgraph.LangGraphEventTypes.OnToolEnd:
+            return []
+
+        tool_output = event.get("data", {}).get("output")
+        if isinstance(tool_output, ToolMessage):
+            artifact = tool_output.artifact
+            tool_call_id = tool_output.tool_call_id
+        elif isinstance(tool_output, dict):
+            artifact = tool_output.get("artifact")
+            tool_call_id = tool_output.get("tool_call_id")
+        else:
+            return []
+
+        if not isinstance(artifact, dict) or not tool_call_id:
+            return []
+
+        structured_content = artifact.get("structured_content")
+        if isinstance(structured_content, str) and structured_content.strip():
+            try:
+                structured_content = json.loads(structured_content)
+            except json.JSONDecodeError:
+                return []
+
+        if not isinstance(structured_content, dict):
+            return []
+
+        display = structured_content.get("display")
+        if not display:
+            return []
+
+        content = mcp_artifact_to_agui_display(
+            tool_name=str(event.get("name") or "tool"),
+            query_args=event.get("data", {}).get("input", {}),
+            surface_base_id=str(tool_call_id),
+            artifact=display,
+        )
+        activity_message = DingMessages.ActivityMessage(id=f"{tool_call_id}:activity", content=content)
+        return self._emit_activity_snapshot_events(activity_message, event)
 
     def _emit_thinking_events(self, reasoning_data: LangGraphReasoning):
         if not reasoning_data or "type" not in reasoning_data or "text" not in reasoning_data:
@@ -529,7 +628,7 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
                 )
             )
 
-    async def _handle_single_event(self, event, state):
+    async def _handle_single_event(self, event: Any, state) -> AsyncGenerator[str]:
         # 1. 尝试提取 reasoning_data，用于判断是否命中需要修复的逻辑分支
         # 注意：你需要确保引入了 resolve_reasoning_content 和 LangGraphEventTypes
         event_type = event.get("event")
@@ -545,5 +644,17 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
 
             return
 
+        command_tool_events = [evt async for evt in self._handle_command_tool_end_event(event)]
+        if command_tool_events:
+            for evt in command_tool_events:
+                yield evt
+            return
+
         async for evt in super()._handle_single_event(event, state):
+            yield evt
+
+        for evt in self._emit_tool_output_activity_snapshot_events(event):
+            yield evt
+
+        for evt in self._emit_state_activity_snapshot_events(state, event):
             yield evt

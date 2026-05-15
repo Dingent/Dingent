@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { useAgent, CopilotSidebar } from "@copilotkit/react-core/v2";
 import { useRenderToolCall } from "@copilotkit/react-core";
@@ -16,11 +16,21 @@ import { useActiveWorkflow } from "@/features/workflows/hooks";
 import { getClientApi } from "@/lib/api/client";
 import { ThinkingProvider, useThinking } from "@/providers/ThinkingProvider";
 import { TodoListView } from "@/components/common/todo-list-view";
+import { ThinkingAccordion } from "./ThinkingAccordion";
 
 interface ChatPageProps {
   isGuest?: boolean;
   visitorId?: string;
   slug?: string;
+}
+
+function shouldThrowOnActivitySnapshot() {
+  if (typeof window === "undefined") return false;
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("debugActivitySnapshot") === "throw") return true;
+
+  return window.localStorage.getItem("dingent.debugActivitySnapshot") === "throw";
 }
 
 function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
@@ -33,11 +43,21 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
   const agent = useAgent({ agentId: agentName });
   const isAgentRunning = agent.agent.isRunning;
   const messages = agent.agent.messages;
-  const activityMessages = messages.filter((m) => m.role === "activity");
+  const snapshotActivityMessages = messages.filter((m) => m.role === "activity");
+  const [streamingActivityMessages, setStreamingActivityMessages] = useState<any[]>([]);
+  const activityMessages = useMemo(() => {
+    const merged = new Map<string, any>();
+    for (const message of streamingActivityMessages) {
+      merged.set(message.id, message);
+    }
+    for (const message of snapshotActivityMessages) {
+      merged.set(message.id, message);
+    }
+    return Array.from(merged.values());
+  }, [snapshotActivityMessages, streamingActivityMessages]);
   const [todos, setTodos] = useState(null);
 
-  const { appendThinkingText, clearThinkingText, isThinking, setIsThinking } =
-    useThinking();
+  const { appendThinkingText, clearThinkingText, isThinking, setIsThinking, thinkingText } = useThinking();
   useRenderToolCall(
     {
       name: "write_todos",
@@ -80,22 +100,50 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
   );
   useEffect(() => {
     setTodos(null);
-  }, [activeThreadId]);
+    setStreamingActivityMessages([]);
+    clearThinkingText();
+    setIsThinking(false);
+  }, [activeThreadId, clearThinkingText, setIsThinking]);
   useEffect(() => {
     if (!agent.agent) return;
 
-    if (!isThinking) {
-      clearThinkingText();
-    }
+    const handleActivitySnapshot = (activityEvent: any) => {
+      const messageId = activityEvent.messageId || activityEvent.message_id;
+      if (messageId && activityEvent.content) {
+        if (shouldThrowOnActivitySnapshot()) {
+          throw new Error(`Received ACTIVITY_SNAPSHOT activity message: ${messageId}`);
+        }
+
+        setStreamingActivityMessages((prevMessages) => {
+          const nextMessages = prevMessages.filter((message) => message.id !== messageId);
+          return [
+            ...nextMessages,
+            {
+              id: messageId,
+              role: "activity",
+              activityType: activityEvent.activityType || activityEvent.activity_type || "a2ui-surface",
+              content: activityEvent.content,
+            },
+          ];
+        });
+      }
+    };
 
     const thinkingSubscriber = {
+      onActivitySnapshotEvent: ({ event }: { event: any }) => {
+        handleActivitySnapshot(event);
+        return undefined;
+      },
       onEvent: ({ event }) => {
         if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
           const thinkingEvent = event as ThinkingTextMessageContentEvent;
           appendThinkingText(thinkingEvent.delta);
+        } else if (event.type === "ACTIVITY_SNAPSHOT") {
+          handleActivitySnapshot(event);
         } else if (event.type === "THINKING_START") {
+          clearThinkingText();
           setIsThinking(true);
-        } else if (event.type === "TEXT_MESSAGE_START") {
+        } else if (event.type === "THINKING_END" || event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
           setIsThinking(false);
         }
         return undefined;
@@ -104,7 +152,7 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
 
     const subscription = agent.agent.subscribe(thinkingSubscriber as Parameters<typeof agent.agent.subscribe>[0]);
     return () => subscription.unsubscribe();
-  }, [agent.agent, isThinking, appendThinkingText, clearThinkingText]);
+  }, [agent.agent, appendThinkingText, clearThinkingText, setIsThinking]);
 
   useEffect(() => {
     if (activeThreadId) {
@@ -134,6 +182,9 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
           overflow-y-auto
         "
       >
+        {(isThinking || thinkingText) && (
+          <ThinkingAccordion content={thinkingText} isThinking={isThinking} label="Thinking Process..." />
+        )}
         {todos && <TodoListView key={activeThreadId} data={todos} />}
         <CopilotChatActivityList messages={activityMessages} />
       </div>

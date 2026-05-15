@@ -1,10 +1,12 @@
 import uuid
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 from ag_ui.core import EventType, RunAgentInput
-from langchain_core.messages import AIMessage, HumanMessage
+from ag_ui_langgraph.agent import ToolCallResultEvent
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from dingent.server.copilot.agents import DingLangGraphAGUIAgent
 
@@ -72,3 +74,38 @@ async def test_prepare_stream_returns_interrupt_events_without_starting_stream()
     assert result["config"] is None
     assert [event.type for event in result["events_to_dispatch"]] == [EventType.RUN_STARTED, EventType.CUSTOM, EventType.RUN_FINISHED]
     graph.astream_events.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_single_event_emits_activity_from_current_state():
+    from dingent.engine.agents.messages import ActivityMessage
+
+    graph = MagicMock()
+    agent = DingLangGraphAGUIAgent(name="test", graph=graph)
+    agent.active_run = {
+        "id": "run_1",
+        "mode": "start",
+        "has_function_streaming": False,
+        "model_made_tool_call": False,
+        "state_reliable": True,
+    }
+
+    tool_message = ToolMessage(id="tool_1", content="tool result", tool_call_id="call_1", name="tool")
+    activity_message = ActivityMessage(id="activity_1", content=[{"type": "markdown", "content": "### Live result"}])
+    event = {
+        "event": "on_tool_end",
+        "name": "tool",
+        "data": {
+            "input": {},
+            "output": tool_message,
+        },
+    }
+    state = {"messages": [HumanMessage(id="user_1", content="hello"), tool_message, activity_message]}
+
+    events = cast(list[Any], [event async for event in agent._handle_single_event(event, state)])
+
+    assert any(isinstance(event, ToolCallResultEvent) for event in events)
+    activity_events = [event for event in events if event.type == EventType.ACTIVITY_SNAPSHOT]
+    assert len(activity_events) == 1
+    assert activity_events[0].message_id == "activity_1"
+    assert activity_events[0].content == {"type": "markdown", "content": "### Live result"}

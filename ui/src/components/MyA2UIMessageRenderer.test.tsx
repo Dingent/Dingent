@@ -42,4 +42,21 @@ describe("createA2UIMessageRenderer", () => {
 
     expect(screen.getByTestId("legacy-table")).toHaveTextContent("1 rows");
   });
+
+  it("renders markdown activity content with GFM tables", () => {
+    const renderer = createA2UIMessageRenderer({});
+    const Render = renderer.render;
+
+    render(
+      <Render
+        activityType="a2ui-surface"
+        content={{ type: "markdown", title: "Result", content: "| Name | Score |\n| --- | ---: |\n| Alice | 95 |" }}
+        message={{}}
+        agent={{}}
+      />,
+    );
+
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+  });
 });

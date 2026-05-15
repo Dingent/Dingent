@@ -85,11 +85,13 @@ async def test_ding_langgraph_agui_agent_run_executes_tool_before_handoff_and_em
         events.append(event)
 
     tool_results = [event for event in events if event.type == EventType.TOOL_CALL_RESULT]
-    assert len(tool_results) == 3
-    assert [event.content for event in tool_results] == ["lookup result for: Transfer to B", "lookup result for: Transfer to B", "Transferred to agent_b"]
+    assert len(tool_results) == 2
+    assert [event.content for event in tool_results] == ["lookup result for: Transfer to B", "Transferred to agent_b"]
     assert tool_results[0].tool_call_id == "call_lookup"
-    assert tool_results[1].tool_call_id == "call_lookup"
-    assert tool_results[2].tool_call_id == "call_handoff"
+    assert tool_results[1].tool_call_id == "call_handoff"
+
+    handoff_tool_events = [event for event in events if getattr(event, "tool_call_id", None) == "call_handoff"]
+    assert [event.type for event in handoff_tool_events] == [EventType.TOOL_CALL_START, EventType.TOOL_CALL_ARGS, EventType.TOOL_CALL_END, EventType.TOOL_CALL_RESULT]
 
     started_steps = [event.step_name for event in events if event.type == EventType.STEP_STARTED]
     assert started_steps.count("tools") >= 2
