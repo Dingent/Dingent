@@ -20,20 +20,20 @@ export default defineConfig({
       command: `DATABASE_URL=sqlite:///./.playwright-e2e.db E2E_BACKEND_PORT=${backendPort} uv run python tests/e2e/playwright_server.py`,
       cwd: "..",
       url: `${backendURL}/api/v1/health`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 60_000,
     },
     {
-      command: `BACKEND_URL=${backendURL} API_BASE_URL=${backendURL}/api/v1 bun run build && BACKEND_URL=${backendURL} API_BASE_URL=${backendURL}/api/v1 bun run start --hostname 127.0.0.1 --port ${frontendPort}`,
+      command: `BACKEND_URL=${backendURL} API_BASE_URL=${backendURL}/api/v1 bun run build && mkdir -p .next/standalone/.next && cp -R .next/static .next/standalone/.next/static && BACKEND_URL=${backendURL} API_BASE_URL=${backendURL}/api/v1 HOSTNAME=127.0.0.1 PORT=${frontendPort} node .next/standalone/server.js`,
       url: `${frontendURL}/dingent/web`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 120_000,
     },
   ],
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], channel: "chromium" },
     },
   ],
 });

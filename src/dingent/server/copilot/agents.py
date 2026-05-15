@@ -36,6 +36,7 @@ from ag_ui_langgraph.utils import (
 )
 from copilotkit import LangGraphAGUIAgent
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from loguru import logger
 
 from dingent.engine.agents import messages as DingMessages
 
@@ -360,15 +361,26 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
             current_config.update(extra_config)
 
         self.config = current_config
+        logger.info(
+            "AG-UI agent run started: agent={}, thread_id={}, run_id={}, input_messages={}, extra_config_keys={}",
+            self.name,
+            input.thread_id,
+            input.run_id,
+            len(input.messages or []),
+            sorted(extra_config or {}),
+        )
+        event_counts: dict[str, int] = {}
 
         try:
             async for event_str in super().run(input):
-                if getattr(event_str, "type", None) == EventType.TEXT_MESSAGE_CONTENT:
+                event_type = getattr(event_str, "type", None)
+                event_counts[str(event_type)] = event_counts.get(str(event_type), 0) + 1
+                if event_type == EventType.TEXT_MESSAGE_CONTENT:
                     message_id = getattr(event_str, "message_id", None)
                     delta = getattr(event_str, "delta", None)
                     if message_id and delta:
                         streamed_message_content[message_id] = streamed_message_content.get(message_id, "") + delta
-                elif getattr(event_str, "type", None) == EventType.MESSAGES_SNAPSHOT:
+                elif event_type == EventType.MESSAGES_SNAPSHOT:
                     for message in getattr(event_str, "messages", []) or []:
                         if getattr(message, "role", None) != "assistant":
                             continue
@@ -379,6 +391,10 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
                             message.content = streamed_message_content[message_id]
 
                 yield event_str
+            logger.info("AG-UI agent run completed: agent={}, thread_id={}, run_id={}, event_counts={}", self.name, input.thread_id, input.run_id, event_counts)
+        except Exception:
+            logger.exception("AG-UI agent run failed: agent={}, thread_id={}, run_id={}, event_counts={}", self.name, input.thread_id, input.run_id, event_counts)
+            raise
         finally:
             self.config = previous_config
 
@@ -390,11 +406,13 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
         config = self.graph.config or {}
         config["configurable"] = config.get("configurable", {})
         config["configurable"]["thread_id"] = thread_id
+        logger.info("Loading thread messages: agent={}, thread_id={}, run_id={}", self.name, thread_id, run_id)
 
         state = await self.graph.aget_state(config)
 
         # 提取 messages
         messages = state.values.get("messages", [])
+        logger.info("Thread messages loaded: agent={}, thread_id={}, run_id={}, message_count={}", self.name, thread_id, run_id, len(messages))
 
         yield self._dispatch_event(
             RunStartedEvent(
@@ -408,7 +426,16 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
         )
 
     async def prepare_stream(self, input: RunAgentInput, agent_state, config):
+        previous_count = len(agent_state.values.get("messages", []))
         agent_state.values["messages"] = [msg for msg in agent_state.values.get("messages", []) if msg.type != "activity"]
+        logger.info(
+            "Preparing AG-UI stream: agent={}, thread_id={}, run_id={}, previous_messages={}, retained_messages={}",
+            self.name,
+            input.thread_id,
+            input.run_id,
+            previous_count,
+            len(agent_state.values["messages"]),
+        )
 
         return await super().prepare_stream(input, agent_state, config)
 
@@ -513,6 +540,7 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
             reasoning_data = ding_resolve_reasoning_content(chunk)
 
         if reasoning_data:
+            logger.debug("AG-UI reasoning chunk emitted: agent={}, event_type={}, reasoning_type={}", self.name, event_type, reasoning_data.get("type"))
             for evt in self._emit_thinking_events(reasoning_data):
                 yield evt
 

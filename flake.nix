@@ -63,7 +63,10 @@
           just
           ruff
           unzip
+          playwright-driver.browsers
         ];
+        PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
         shellHook = ''
           VENV_DIR=".venv"
           if [ ! -d "$VENV_DIR" ]; then

@@ -1,5 +1,7 @@
+from typing import Any, cast
+
 import pytest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from dingent.engine.agents.simple_agent import DingMiddleware, mcp_artifact_to_agui_display
@@ -27,6 +29,30 @@ def test_mcp_artifact_to_agui_display_builds_official_a2ui_operations():
     assert data["columns"] == ["id", "name", "active", "score"]
     assert data["rows"] == [{"id": 1, "name": "Alice", "active": True, "score": 95.5}, {"id": 2, "name": "Bob", "active": False, "score": 88.0}]
     assert data["pageInfo"] == "Page 1"
+
+
+@pytest.mark.asyncio
+async def test_ding_middleware_awrap_model_call_normalizes_string_content_blocks():
+    middleware = DingMiddleware()
+    user_message = HumanMessage(content=["", "hello", {"type": "text", "text": "world"}])
+
+    class MockRequest:
+        messages = [user_message]
+        model_settings = {}
+
+        def override(self, **kwargs):
+            self.messages = kwargs.get("messages", self.messages)
+            self.model_settings = kwargs.get("model_settings", self.model_settings)
+            return self
+
+    async def mock_handler(req: Any) -> str:
+        assert req.messages[0].content == [{"type": "text", "text": "hello"}, {"type": "text", "text": "world"}]
+        assert req.model_settings["parallel_tool_calls"] is False
+        return "ok"
+
+    result = await middleware.awrap_model_call(cast(Any, MockRequest()), cast(Any, mock_handler))
+
+    assert result == "ok"
 
 
 @pytest.mark.asyncio

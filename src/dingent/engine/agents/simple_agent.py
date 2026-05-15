@@ -12,6 +12,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
+from loguru import logger
 
 from .messages import ActivityMessage
 
@@ -113,6 +114,34 @@ def _table_rows_to_records(columns: list[str], rows: list[list[str | int | Any]]
     return [dict(zip(columns, row_data, strict=False)) for row_data in rows]
 
 
+def _normalize_openai_content_blocks(message: AnyMessage) -> AnyMessage:
+    content = message.content
+    if not isinstance(content, list):
+        return message
+
+    normalized_content: list[Any] = []
+    changed = False
+    for block in content:
+        if isinstance(block, str):
+            changed = True
+            if block.strip():
+                normalized_content.append({"type": "text", "text": block})
+        else:
+            normalized_content.append(block)
+
+    if not changed:
+        return message
+    return message.model_copy(update={"content": normalized_content or ""})
+
+
+def _message_type_counts(messages: list[AnyMessage]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for message in messages:
+        message_type = getattr(message, "type", type(message).__name__)
+        counts[message_type] = counts.get(message_type, 0) + 1
+    return counts
+
+
 class DingMiddleware(AgentMiddleware):
     async def awrap_model_call(
         self,
@@ -120,10 +149,25 @@ class DingMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
         all_messages = request.messages
-        filtered_messages: list[AnyMessage] = [msg for msg in all_messages if isinstance(msg, SystemMessage | HumanMessage | AIMessage | ToolMessage)]
+        filtered_messages: list[AnyMessage] = [
+            _normalize_openai_content_blocks(msg) for msg in all_messages if isinstance(msg, SystemMessage | HumanMessage | AIMessage | ToolMessage)
+        ]
         model_settings = {**request.model_settings, "parallel_tool_calls": False}
+        logger.info(
+            "Agent model call started: input_messages={}, filtered_messages={}, message_types={}, parallel_tool_calls={}",
+            len(all_messages),
+            len(filtered_messages),
+            _message_type_counts(filtered_messages),
+            model_settings["parallel_tool_calls"],
+        )
         request = request.override(messages=filtered_messages, model_settings=model_settings)
-        result = await handler(request)
+        try:
+            result = await handler(request)
+        except Exception:
+            logger.exception("Agent model call failed: filtered_messages={}, message_types={}", len(filtered_messages), _message_type_counts(filtered_messages))
+            raise
+
+        logger.info("Agent model call completed: result_type={}", type(result).__name__)
 
         return result
 
@@ -135,6 +179,13 @@ class DingMiddleware(AgentMiddleware):
         tool_call = request.tool_call
         tool_call_id = tool_call.get("id") or "unknown_tool_call_id"
         tool_name = request.tool.name if request.tool else "tool"
+        tool_args = tool_call.get("args", {})
+        logger.info(
+            "Agent tool call started: tool_name={}, tool_call_id={}, arg_keys={}",
+            tool_name,
+            tool_call_id,
+            sorted(tool_args) if isinstance(tool_args, dict) else [],
+        )
 
         try:
             result = await handler(request)
@@ -173,18 +224,33 @@ class DingMiddleware(AgentMiddleware):
                     )
                     collected_messages.append(ActivityMessage(content=agui_display))
 
+                logger.info(
+                    "Agent tool call completed: tool_name={}, tool_call_id={}, result_type=ToolMessage, has_artifact={}, emitted_messages={}",
+                    tool_name,
+                    tool_call_id,
+                    bool(artifact),
+                    len(collected_messages),
+                )
                 return Command(update={"messages": collected_messages})
 
             # --- 分支 B: 处理 Command ---
             elif isinstance(result, Command):
                 # 如果是 Graph 更新，不需要追加全部历史消息，LangGraph 的 add_messages reducer 会自动处理追加。
                 # 之前在这里直接使用 append 会导致 state 原地突变并在多轮对话中引起无限复制消息的问题。
+                update = result.update if isinstance(result.update, dict) else {}
+                logger.info(
+                    "Agent tool call completed: tool_name={}, tool_call_id={}, result_type=Command, update_keys={}",
+                    tool_name,
+                    tool_call_id,
+                    sorted(update),
+                )
                 return result
 
             else:
                 raise ValueError(f"Unsupported result type: {type(result)}")
 
         except Exception as e:
+            logger.exception("Agent tool call failed: tool_name={}, tool_call_id={}", tool_name, tool_call_id)
             return Command(update={"messages": [ToolMessage(content=f"Execution Error: {str(e)}", tool_call_id=tool_call_id, is_error=True)]})
 
 
@@ -235,6 +301,7 @@ def build_simple_react_agent(
     system_prompt: str | None = None,
     debug: bool = False,
 ) -> CompiledStateGraph:
+    logger.info("Building simple react agent: name={}, tool_count={}, has_system_prompt={}", name, len(tools), bool(system_prompt))
     agent = create_agent(
         model=llm,
         tools=tools,

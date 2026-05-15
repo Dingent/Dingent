@@ -8,7 +8,7 @@ test("guest chat completes a real browser/backend flow and can switch conversati
     window.localStorage.setItem("currentChatThreadId", "");
   }, visitorId);
 
-  await page.goto("/guest/playwright-e2e/chat");
+  await page.goto("/dingent/web/guest/playwright-e2e/chat");
 
   await expect(page.getByText("New Chat").first()).toBeVisible();
 

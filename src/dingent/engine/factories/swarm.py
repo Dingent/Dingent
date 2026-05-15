@@ -3,6 +3,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from uuid import UUID
 
 from langchain.tools import BaseTool
+from loguru import logger
 
 from dingent.core.assistants.assistant_factory import AssistantFactory
 from dingent.core.utils import normalize_agent_name
@@ -30,10 +31,12 @@ async def create_assistant_graphs(
         assistant_id_map: Optional mapping from assistant names to their database IDs
     """
     assistant_graphs = {}
+    logger.info("Creating assistant graphs: workflow={}, assistant_count={}", workflow.name, len(workflow.assistant_configs))
 
     # 3. 构建每个 Agent 图
     async with AsyncExitStack() as stack:
         for name, assistant_config in workflow.assistant_configs.items():
+            logger.info("Preparing assistant graph: workflow={}, assistant={}", workflow.name, name)
             rt = await assistant_factory.create_runtime(assistant_config)
             raw_tools = await stack.enter_async_context(rt.load_tools())
 
@@ -66,6 +69,15 @@ async def create_assistant_graphs(
                 create_handoff_tool(normalize_agent_name(dest), description=f"{workflow.assistant_configs[normalize_agent_name(dest)].description}", log_method=log_method)
                 for dest in destinations
             ]
+            logger.info(
+                "Assistant tools prepared: workflow={}, assistant={}, raw_tools={}, enabled_tools={}, handoff_tools={}, destinations={}",
+                workflow.name,
+                name,
+                len(raw_tools),
+                len(transformed_tools),
+                len(handoff_tools),
+                destinations,
+            )
 
             # Resolve LLM for this specific assistant
             if callable(llm_or_resolver) and assistant_id_map:
@@ -86,5 +98,7 @@ async def create_assistant_graphs(
                 system_prompt=assistant_config.instructions,
             )
             assistant_graphs[name] = agent
+            logger.info("Assistant graph ready: workflow={}, assistant={}, total_tools={}", workflow.name, name, len(handoff_tools) + len(transformed_tools))
 
+        logger.info("Assistant graphs created: workflow={}, graph_count={}", workflow.name, len(assistant_graphs))
         yield assistant_graphs

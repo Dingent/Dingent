@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -7,6 +8,7 @@ from ag_ui.core.types import RunAgentInput
 from ag_ui.encoder import EventEncoder
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from loguru import logger
 from sqlmodel import col, delete, select
 
 from dingent.core.db.crud.workflow import get_workflow_by_name
@@ -77,10 +79,22 @@ async def get_agent_context(
     workspace: CurrentWorkspaceAllowGuest,
     visitor_id: str | None = Header(None, alias="X-Visitor-ID"),
 ) -> AgentContext:
+    logger.info(
+        "Preparing chat agent run: agent_id={}, thread_id={}, run_id={}, workspace_id={}, workspace_slug={}, user_id={}, visitor_id_present={}",
+        agent_id,
+        input_data.thread_id,
+        input_data.run_id,
+        workspace.id,
+        workspace.slug,
+        getattr(user, "id", None),
+        bool(visitor_id),
+    )
+
     # --- A. 验证 thread_id ---
     try:
         thread_uuid = uuid.UUID(input_data.thread_id)
     except ValueError:
+        logger.warning("Invalid chat thread_id: agent_id={}, thread_id={}", agent_id, input_data.thread_id)
         raise HTTPException(status_code=400, detail="Invalid thread_id format")
 
     conversation = session.exec(select(Conversation).where(Conversation.id == thread_uuid)).first()
@@ -126,20 +140,33 @@ async def get_agent_context(
     # --- C. 解析 Agent ---
     workflow = get_workflow_by_name(session, agent_id, workspace.id)
     if not workflow and agent_id != "default":
+        logger.warning("Workflow not found for chat run: agent_id={}, workspace_id={}, workspace_slug={}", agent_id, workspace.id, workspace.slug)
         raise HTTPException(status_code=404, detail=f"Workflow '{agent_id}' not found")
 
-    # Use context-aware model resolution with cascading strategy
-    from dingent.core.llms.service import get_llm_for_context
+    try:
+        # Use context-aware model resolution with cascading strategy
+        from dingent.core.llms.service import get_llm_for_context
 
-    workflow_id = workflow.id if workflow else None
-    llm = get_llm_for_context(
-        session=session,
-        workflow_id=workflow_id,
-        workspace_id=workspace.id,
-    )
+        workflow_id = workflow.id if workflow else None
+        llm = get_llm_for_context(
+            session=session,
+            workflow_id=workflow_id,
+            workspace_id=workspace.id,
+        )
 
-    spec = await get_workflow_spec(workflow)
-    agent = await sdk.resolve_agent(spec, llm)
+        spec = await get_workflow_spec(workflow)
+        agent = await sdk.resolve_agent(spec, llm)
+    except Exception:
+        logger.exception(
+            "Failed to prepare chat agent context: agent_id={}, thread_id={}, run_id={}, workspace_id={}, workspace_slug={}, workflow_id={}",
+            agent_id,
+            input_data.thread_id,
+            input_data.run_id,
+            workspace.id,
+            workspace.slug,
+            workflow.id if workflow else None,
+        )
+        raise
 
     # --- D. 准备 Encoder ---
     accept_header = request.headers.get("accept")
@@ -166,14 +193,44 @@ async def get_agents(
 
 @router.post("/agent/{agent_id}/run")
 async def run(
+    agent_id: str,
     ctx: AgentContext = Depends(get_agent_context),
 ):
     async def event_generator():
-        async for event in ctx.agent.run(
-            ctx.input_data,
-        ):
-            encoded_event = ctx.encoder.encode(cast(Any, event))
-            yield encoded_event
+        try:
+            async for event in ctx.agent.run(
+                ctx.input_data,
+            ):
+                encoded_event = ctx.encoder.encode(cast(Any, event))
+                yield encoded_event
+            logger.info(
+                "Chat stream completed: agent_id={}, thread_id={}, run_id={}, conversation_id={}, workspace_id={}",
+                agent_id,
+                ctx.input_data.thread_id,
+                ctx.input_data.run_id,
+                ctx.conversation.id,
+                ctx.conversation.workspace_id,
+            )
+        except asyncio.CancelledError:
+            logger.warning(
+                "Chat stream cancelled by client: agent_id={}, thread_id={}, run_id={}, conversation_id={}, workspace_id={}",
+                agent_id,
+                ctx.input_data.thread_id,
+                ctx.input_data.run_id,
+                ctx.conversation.id,
+                ctx.conversation.workspace_id,
+            )
+            raise
+        except Exception:
+            logger.exception(
+                "Chat stream failed: agent_id={}, thread_id={}, run_id={}, conversation_id={}, workspace_id={}",
+                agent_id,
+                ctx.input_data.thread_id,
+                ctx.input_data.run_id,
+                ctx.conversation.id,
+                ctx.conversation.workspace_id,
+            )
+            raise
 
     # Update conversation title if needed
     update_conversation_title(ctx.conversation, ctx.input_data)

@@ -13,6 +13,7 @@ to use at runtime. The priority order is:
 from uuid import UUID
 
 from langchain_litellm import ChatLiteLLM
+from loguru import logger
 from sqlmodel import Session
 
 from dingent.core.db.models import Assistant, LLMModelConfig, Workflow, Workspace
@@ -69,10 +70,26 @@ class ModelResolver:
         config = self._resolve_config(assistant_id, workflow_id, workspace_id)
 
         if config:
+            logger.info(
+                "LLM config resolved: config_id={}, name={}, provider={}, model={}, assistant_id={}, workflow_id={}, workspace_id={}",
+                config.id,
+                config.name,
+                config.provider,
+                config.model,
+                assistant_id,
+                workflow_id,
+                workspace_id,
+            )
             return self._build_model_from_config(config)
         else:
             # Fallback to environment-based configuration
 
+            logger.info(
+                "LLM config fallback selected: assistant_id={}, workflow_id={}, workspace_id={}",
+                assistant_id,
+                workflow_id,
+                workspace_id,
+            )
             return ChatLiteLLM(streaming=True)
 
     def _resolve_config(
@@ -128,6 +145,15 @@ class ModelResolver:
 
         # Use the model's built-in method to get LiteLLM kwargs
         kwargs = config.to_litellm_kwargs(api_key)
+        safe_parameter_keys = sorted(key for key in kwargs if key != "api_key")
+        logger.info(
+            "Building ChatLiteLLM: config_id={}, provider={}, model={}, api_base_present={}, parameter_keys={}",
+            config.id,
+            config.provider,
+            kwargs.get("model"),
+            bool(kwargs.get("api_base")),
+            safe_parameter_keys,
+        )
 
         return ChatLiteLLM(
             **kwargs,
