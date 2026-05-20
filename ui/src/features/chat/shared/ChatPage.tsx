@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { useAgent, CopilotSidebar } from "@copilotkit/react-core/v2";
 import { useRenderToolCall } from "@copilotkit/react-core";
@@ -56,6 +56,8 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
     return Array.from(merged.values());
   }, [snapshotActivityMessages, streamingActivityMessages]);
   const [todos, setTodos] = useState(null);
+  const runStartTimeRef = useRef<number | null>(null);
+  const hasLoggedFirstTokenTimeRef = useRef(false);
 
   const { appendThinkingText, clearThinkingText, isThinking, setIsThinking, thinkingText } = useThinking();
   useRenderToolCall(
@@ -129,21 +131,44 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
       }
     };
 
+    const logFirstTokenTime = (eventType: string, delta?: string) => {
+      if (hasLoggedFirstTokenTimeRef.current || !delta) return;
+
+      const now = performance.now();
+      const runStartTime = runStartTimeRef.current;
+      if (runStartTime === null) return;
+
+      hasLoggedFirstTokenTimeRef.current = true;
+      console.log("[Dingent] First token time", {
+        elapsedMs: Math.round((now - runStartTime) * 100) / 100,
+        eventType,
+      });
+    };
+
     const thinkingSubscriber = {
       onActivitySnapshotEvent: ({ event }: { event: any }) => {
         handleActivitySnapshot(event);
         return undefined;
       },
       onEvent: ({ event }) => {
-        if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
+        if (event.type === "RUN_STARTED") {
+          runStartTimeRef.current = performance.now();
+          hasLoggedFirstTokenTimeRef.current = false;
+        } else if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
           const thinkingEvent = event as ThinkingTextMessageContentEvent;
+          logFirstTokenTime(event.type, thinkingEvent.delta);
           appendThinkingText(thinkingEvent.delta);
+        } else if (event.type === "TEXT_MESSAGE_CONTENT" || event.type === "REASONING_MESSAGE_CONTENT") {
+          logFirstTokenTime(event.type, event.delta);
         } else if (event.type === "ACTIVITY_SNAPSHOT") {
           handleActivitySnapshot(event);
         } else if (event.type === "THINKING_START") {
           clearThinkingText();
           setIsThinking(true);
         } else if (event.type === "THINKING_END" || event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
+          if (event.type !== "THINKING_END") {
+            runStartTimeRef.current = null;
+          }
           setIsThinking(false);
         }
         return undefined;
