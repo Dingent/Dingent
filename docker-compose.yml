@@ -1,0 +1,40 @@
+services:
+  backend:
+    image: littlelice/dingent-backend:Docker-Dev
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - DINGENT_HOME=/app/data
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    networks:
+      - dingent-network
+
+  frontend:
+    image: littlelice/dingent-frontend:Docker-Dev
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        - BACKEND_URL=http://backend:8000
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      # The frontend Next.js server (running in container) needs to know where the backend is for SSR/Rewrites
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - dingent-network
+
+networks:
+  dingent-network:
+    driver: bridge

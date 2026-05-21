@@ -106,6 +106,54 @@ uvx dingent dev # 或 uvx dingent run
   - **添加自定义工具**: 将您的自定义 MCP 服务器插件放入 `plugins/` 目录中。
   - **与您的 Agent 互动**: 通过前端 `http://localhost:3000` 开始与您的 Agent 聊天。
 
+## 🐳 Docker 部署
+
+Dingent 也可以使用 Docker 和 Docker Compose 进行部署，以便轻松设置和部署。
+
+### 前置条件
+
+  - **Docker**: [安装 Docker](https://docs.docker.com/get-docker/)
+  - **Docker Compose**: [安装 Docker Compose](https://docs.docker.com/compose/install/)
+
+### 使用 Docker 快速开始
+
+1. 克隆仓库：
+
+```bash
+git clone -b Docker-Dev https://github.com/littleLice/Dingent.git
+cd Dingent
+```
+
+2. 使用 Docker Compose 启动服务：
+
+```bash
+docker-compose up -d
+```
+
+这将拉取预构建的镜像并启动后端和前端服务。
+
+3. 访问服务：
+
+  - **前端聊天界面**: [http://localhost:3000](http://localhost:3000)
+  - **后端 API**: [http://localhost:8000](http://localhost:8000)
+  - **管理后台**: [http://localhost:8000/admin](http://localhost:8000/admin)
+
+### 停止服务
+
+要停止服务，运行：
+
+```bash
+docker-compose down
+```
+
+### 重新构建服务
+
+如果您对代码进行了更改并需要重新构建 Docker 镜像：
+
+```bash
+docker-compose up -d --build
+```
+
 ## 🏛️ 项目架构
 
 一个 Dingent 项目拥有简单直观的结构，并由框架为您自动管理：
@@ -166,10 +214,6 @@ my-awesome-agent/
 5.  创建一个 Pull Request，并清晰地描述您功能的价值。
 
 我们相信，通过我们共同的努力，Dingent 可以成为一个真正强大且“开箱即用”的工具。
-
-## 📄 许可证
-
-本项目采用 [MIT 许可证](https://www.google.com/search?q=./LICENSE)。
 
 ## 📄 许可证
 

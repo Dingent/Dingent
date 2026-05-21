@@ -4,7 +4,9 @@ import { redirect } from "next/navigation";
 import { ApiClient } from "@/services";
 
 const getBaseUrl = () =>
-  process.env.API_BASE_URL || "http://127.0.0.1:8000/api/v1";
+  process.env.API_BASE_URL ||
+  process.env.BACKEND_URL?.replace(/\/$/, "") + "/api/v1" ||
+  "http://127.0.0.1:8000/api/v1";
 
 export async function getServerApi() {
   const cookieStore = await cookies();

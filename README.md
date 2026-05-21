@@ -90,6 +90,105 @@ frontend-backend communication... These tasks are tedious and repetitive.
 Just download the latest executable for your platform from the releases page and run it.
 
 
+# Run the development server
+uvx dingent dev # or uvx dingent run
+```
+
+The first time you run this command, Dingent will ask if you want to create a
+`dingent.toml` configuration file, officially turning the directory into a
+Dingent project root.
+
+The `dev` command will start all necessary services:
+
+- **Frontend Chat**: Accessible at
+  [http://localhost:3000](http://localhost:3000)
+- **Backend API**: Running at [http://localhost:8000](http://localhost:8000)
+- **Admin Dashboard**: Accessible at
+  [http://localhost:8000/admin](http://localhost:8000/admin)
+
+Your project is now live\! You can now:
+
+- **Configure your application**: Open the admin dashboard at
+  `http://localhost:8000/admin` to create assistants, build workflows, and
+  configure your LLM settings.
+- **Add custom tools**: Place your custom MCP server plugins into the `plugins/`
+  directory.
+- **Interact with your agent**: Start chatting with your agent through the
+  frontend at `http://localhost:3000`.
+
+## 🐳 Docker Deployment
+
+Dingent can also be deployed using Docker and Docker Compose for easy setup and deployment.
+
+### Prerequisites
+
+- **Docker**: [Install Docker](https://docs.docker.com/get-docker/)
+- **Docker Compose**: [Install Docker Compose](https://docs.docker.com/compose/install/)
+
+### Quick Start with Docker
+
+1. Clone the repository:
+
+```bash
+git clone -b Docker-Dev https://github.com/littleLice/Dingent.git
+cd Dingent
+```
+
+2. Start the services using Docker Compose:
+
+```bash
+docker-compose up -d
+```
+
+This will pull the pre-built images and start both the backend and frontend services.
+
+3. Access the services:
+
+- **Frontend Chat**: [http://localhost:3000](http://localhost:3000)
+- **Backend API**: [http://localhost:8000](http://localhost:8000)
+- **Admin Dashboard**: [http://localhost:8000/admin](http://localhost:8000/admin)
+
+### Stopping the Services
+
+To stop the services, run:
+
+```bash
+docker-compose down
+```
+
+### Rebuilding the Services
+
+If you make changes to the code and need to rebuild the Docker images:
+
+```bash
+docker-compose up -d --build
+```
+
+## 🏛️ Project Architecture
+
+A Dingent project has a simple and intuitive structure, managed automatically
+for you:
+
+```plaintext
+my-awesome-agent/
+├── 📄 dingent.toml     # Main project config (ports, model, etc.). Marks the project root.
+├── 📁 config/          # Stores all application configurations managed by the dashboard.
+│   ├── 📁 assistants/
+│   ├── 📁 plugins/
+│   └── 📁 workflows/
+└── 📁 plugins/         # Directory for your custom tool plugins (e.g., MCP servers).
+```
+
+- **`dingent.toml`**: The single source of truth for your project's core
+  settings. The presence of this file tells Dingent commands that they are in a
+  project directory.
+- **`config/`**: This directory holds the configuration for your assistants,
+  plugins, and workflows. You typically won't need to edit these files manually,
+  as they are managed through the **Admin Dashboard**.
+- **`plugins/`**: This is where you add your own functionality. Place any
+  MCP-compatible server in this directory, and Dingent will automatically
+  discover and integrate it.
+
 ## 🗺️ Roadmap
 
 - **✅ 1. Documentation & Tutorials**

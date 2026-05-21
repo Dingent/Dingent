@@ -1,0 +1,46 @@
+# Stage 1: Builder
+FROM oven/bun:1 AS builder
+
+WORKDIR /app
+
+# Set build-time argument for backend URL
+ARG BACKEND_URL=http://localhost:8000
+ENV BACKEND_URL=${BACKEND_URL}
+
+# Copy package files
+COPY ui/package.json ui/bun.lock ./
+
+# Install dependencies
+RUN bun install --frozen-lockfile
+
+# Copy source code
+COPY ui/ ./
+
+# Build the application
+# This will output to .next/standalone because output: 'standalone' is set in next.config.ts
+RUN bun run build
+
+# Stage 2: Runner
+FROM node:20-slim AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# Copy standalone build
+# Next.js standalone output puts the server.js in the root of the standalone folder
+# It also includes necessary node_modules
+COPY --from=builder /app/.next/standalone ./
+
+# Copy static assets
+# Standalone mode does not include public or .next/static folders, so they must be copied manually
+COPY --from=builder /app/src/public ./public
+COPY --from=builder /app/.next/static ./.next/static
+
+# Expose port
+EXPOSE 3000
+
+# Start the server
+CMD ["node", "server.js"]
