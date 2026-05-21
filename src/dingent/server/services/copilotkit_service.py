@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
+from loguru import logger
 from sqlmodel import Session
 
 from dingent.core.db.crud.workflow import list_workflows_by_workspace
@@ -35,7 +36,7 @@ def _truncate(obj: Any, limit: int = 2048) -> Any:
 
 def fake_log_method(type, message: str, **kwargs: Any) -> None:
     """A placeholder log method that does nothing."""
-    print(type, message, _truncate(kwargs))
+    logger.bind(source="graph_factory").debug("Graph factory event: type={}, message={}, data={}", type, message, _truncate(kwargs))
 
 
 class CopilotKitSdk:
@@ -49,7 +50,14 @@ class CopilotKitSdk:
         self.checkpointer = checkpointer
 
     async def resolve_agent(self, workflow: ExecutableWorkflow, llm) -> DingLangGraphAGUIAgent:
+        logger.info(
+            "Resolving copilot agent: workflow={}, assistants={}, llm_type={}",
+            workflow.name,
+            len(workflow.assistant_configs),
+            type(llm).__name__,
+        )
         graph_artifact = await self.graph_factory.build(workflow, llm, self.checkpointer, fake_log_method)
+        logger.info("Copilot agent resolved: workflow={}, description_present={}", workflow.name, bool(workflow.description))
         return DingLangGraphAGUIAgent(
             name=workflow.name,
             description=workflow.description or f"Agent for workflow '{workflow.name}'",

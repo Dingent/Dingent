@@ -1,19 +1,9 @@
-from functools import lru_cache
 from uuid import UUID
 
 from langchain_litellm import ChatLiteLLM
 from sqlmodel import Session
 
 from dingent.core.llms.resolver import ModelResolver
-
-
-@lru_cache(maxsize=20)
-def get_llm(**kwargs) -> ChatLiteLLM:
-    """
-    Get a ChatLiteLLM instance with optional kwargs.
-    This is the legacy/fallback method using environment variables.
-    """
-    return ChatLiteLLM(**kwargs)
 
 
 def get_llm_for_context(

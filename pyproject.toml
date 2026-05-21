@@ -12,23 +12,23 @@ dependencies = [
   "toml>=0.10.2",
   "pydantic-settings<3.0.0,>=2.4.0",
   "loguru>=0.7.3",
-  "langgraph>=0.6.3",
+  "langgraph>=1.2.0",
   "typer>=0.16.0",
-  "copilotkit>=0.1.56",
-  "langchain>=0.3.23",
-  "fastmcp>=2.2.0",
+  "copilotkit>=0.1.89",
+  "langchain>=1.3.0",
+  "ag-ui-langgraph>=0.0.35",
+  "fastmcp==3.0.0b1",
   "langchain-mcp-adapters>=0.0.11",
-  "langgraph-cli[inmem]>=0.1.73",
-  "langgraph-swarm>=0.0.12",
-  "langgraph-api>=0.0.21",
+  "langgraph-cli[inmem]>=0.4.26",
+  "langgraph-swarm>=0.1.0",
+  "langgraph-api>=0.8.7",
   "numpy>=2.3.0",
   "tomlkit>=0.13.3",
-  "nodejs-wheel>=22.18.0",
   "psutil>=7.0.0",
-  "langgraph-checkpoint-sqlite>=2.0.11",
+  "langgraph-checkpoint-sqlite>=3.1.0",
   "aiosqlite>=0.21.0",
   "async-lru>=2.0.5",
-  "langchain-litellm>=0.2.2",
+  "langchain-litellm>=0.6.4",
   "keyring>=25.6.0",
   "litellm>=1.76.1",
   "google-genai>=1.32.0",
@@ -39,6 +39,7 @@ dependencies = [
   "pwdlib[argon2]>=0.3.0",
   "fsspec>=2025.12.0",
   "aiohttp>=3.13.3",
+  "alembic>=1.18.3",
 ]
 
 [build-system]
@@ -96,6 +97,7 @@ useLibraryCodeForTypes = true
 reportInvalidCast = "none"
 
 
+
 [dependency-groups]
 dev = [
     "ipython>=9.4.0",
@@ -107,6 +109,9 @@ dev = [
     "pytest-asyncio>=0.26.0",
     "python-dotenv>=1.1.0",
     "pyinstaller>=6.17.0",
+    "mlflow>=3.9.0",
+    "pytest-benchmark>=5.2.3",
+    "locust>=2.43.3",
 ]
 
 

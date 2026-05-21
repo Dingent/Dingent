@@ -51,4 +51,5 @@ def create_db_and_tables():
     create_initial_roles()
 
 
-create_db_and_tables()
+if __name__ == "__main__":
+    create_db_and_tables()

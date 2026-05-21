@@ -13,10 +13,26 @@ to use at runtime. The priority order is:
 from uuid import UUID
 
 from langchain_litellm import ChatLiteLLM
+from loguru import logger
 from sqlmodel import Session
 
 from dingent.core.db.models import Assistant, LLMModelConfig, Workflow, Workspace
 from dingent.core.security.crypto import get_secret_manager
+
+try:
+    import os
+
+    import mlflow
+
+    os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] = "5"
+    os.environ["MLFLOW_HTTP_REQUEST_MAX_RETRIES"] = "0"
+    mlflow.set_tracking_uri("http://localhost:5000")
+    mlflow.set_experiment("traces-quickstart")
+
+    mlflow.litellm.autolog()
+except Exception:
+    print("MLflow not available or failed to initialize.")
+    pass
 
 
 class ModelResolver:
@@ -54,10 +70,27 @@ class ModelResolver:
         config = self._resolve_config(assistant_id, workflow_id, workspace_id)
 
         if config:
+            logger.info(
+                "LLM config resolved: config_id={}, name={}, provider={}, model={}, assistant_id={}, workflow_id={}, workspace_id={}",
+                config.id,
+                config.name,
+                config.provider,
+                config.model,
+                assistant_id,
+                workflow_id,
+                workspace_id,
+            )
             return self._build_model_from_config(config)
         else:
             # Fallback to environment-based configuration
-            return ChatLiteLLM()
+
+            logger.info(
+                "LLM config fallback selected: assistant_id={}, workflow_id={}, workspace_id={}",
+                assistant_id,
+                workflow_id,
+                workspace_id,
+            )
+            return ChatLiteLLM(streaming=True)
 
     def _resolve_config(
         self,
@@ -112,8 +145,20 @@ class ModelResolver:
 
         # Use the model's built-in method to get LiteLLM kwargs
         kwargs = config.to_litellm_kwargs(api_key)
+        safe_parameter_keys = sorted(key for key in kwargs if key != "api_key")
+        logger.info(
+            "Building ChatLiteLLM: config_id={}, provider={}, model={}, api_base_present={}, parameter_keys={}",
+            config.id,
+            config.provider,
+            kwargs.get("model"),
+            bool(kwargs.get("api_base")),
+            safe_parameter_keys,
+        )
 
-        return ChatLiteLLM(**kwargs)
+        return ChatLiteLLM(
+            **kwargs,
+            streaming=True,
+        )
 
     def resolve_for_workflow(
         self,

@@ -9,6 +9,7 @@ from dingent.core.plugins.schemas import PluginRead, PluginUpdate
 class AssistantBase(SQLModel):
     name: str = Field(..., description="The display name of the assistant.")
     description: str
+    instructions: str | None = Field(None, description="Special instructions for the assistant.")
     version: str | float = Field("0.2.0", description="Assistant version.")
     spec_version: str | float = Field("2.0", description="Specification version.")
     enabled: bool = Field(True, description="Enable or disable the assistant.")
@@ -53,6 +54,7 @@ class PluginSpec(SQLModel):
     plugin_id: str
     registry_id: str
     config: dict[str, Any]
+    tool_configs: list[dict[str, Any]]
 
 
 class AssistantSpec(SQLModel):
@@ -60,3 +62,4 @@ class AssistantSpec(SQLModel):
     name: str
     plugins: list[PluginSpec] = []
     description: str
+    instructions: str | None = None

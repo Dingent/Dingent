@@ -1,450 +1,340 @@
 import json
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, cast
 
-from langchain.chat_models.base import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import StructuredTool
-from langgraph.graph import END, StateGraph
-from langgraph.graph.state import CompiledStateGraph, RunnableConfig
+from copilotkit import a2ui
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, TodoListMiddleware
+from langchain.agents.middleware.todo import WRITE_TODOS_SYSTEM_PROMPT, WRITE_TODOS_TOOL_DESCRIPTION, Todo
+from langchain.agents.middleware.types import ModelCallResult, ToolCallRequest
+from langchain.tools import BaseTool, InjectedToolCallId, tool
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_litellm.chat_models import litellm as langchain_litellm_chat_models
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
+from loguru import logger
 
 from .messages import ActivityMessage
-from .state import SimpleAgentState
+
+_ORIGINAL_CONVERT_MESSAGE_TO_DICT = langchain_litellm_chat_models._convert_message_to_dict
 
 
-def mcp_artifact_to_agui_display(tool_name, query_args: dict, surface_base_id: str | list[str], artifact: list[dict[str, Any]], update_data=False) -> dict[str, list[dict]]:
+def _convert_message_to_dict_with_reasoning_content(message: AnyMessage) -> dict[str, Any]:
+    message_dict = _ORIGINAL_CONVERT_MESSAGE_TO_DICT(message)
+    reasoning_content = message.additional_kwargs.get("reasoning_content") if isinstance(message, AIMessage) else None
+    if reasoning_content and "reasoning_content" not in message_dict:
+        message_dict["reasoning_content"] = reasoning_content
+    return message_dict
+
+
+langchain_litellm_chat_models._convert_message_to_dict = _convert_message_to_dict_with_reasoning_content
+
+
+def mcp_artifact_to_agui_display(
+    tool_name: str, query_args: dict[str, Any], surface_base_id: str | list[str], artifact: list[dict[str, Any]], update_data: bool = False
+) -> list[dict[str, Any]]:
     if not isinstance(artifact, list):
         return [artifact]
-    else:
-        return artifact
-    agui_display = {"operations": []}
+    agui_display: dict[str, Any] = {"a2ui_operations": [], "surfaceId": None}
+    display_messages: list[dict[str, Any]] = []
 
     if isinstance(surface_base_id, list):
-        assert len(surface_base_id) == len(artifact), "Surface base ID and artifact length mismatch"
+        if len(surface_base_id) != len(artifact):
+            raise ValueError("Surface base ID and artifact length mismatch")
 
     for i, item in enumerate(artifact):
-        # 1. 基础渲染信号
         surface_id = f"{surface_base_id}-{i}" if isinstance(surface_base_id, str) else surface_base_id[i]
+        agui_display["surfaceId"] = surface_id
 
         type_ = item.get("type")
         if update_data:
-            columns = item.get("columns", [])  # 预期格式: [{"key": "id", "label": "ID"}, ...]
-            rows = item.get("rows", [])
-            title = item.get("title", "Table Data")
-            a2ui_rows = _transform_rows_to_a2ui(columns, rows)
-            agui_display["operations"].append(
-                {
-                    "dataModelUpdate": {
-                        "surfaceId": surface_id,
-                        "contents": [
-                            {"key": "rows", "valueMap": a2ui_rows},
-                            # 初始化分页状态
-                            {"key": "pageInfo", "valueString": "Page 1"},
-                            {"key": "isFirstPage", "valueBoolean": True},
-                            {"key": "isLastPage", "valueBoolean": False},
-                        ],
-                    }
-                }
-            )
+            operations = [a2ui.update_data_model(surface_id, _build_table_data(item, query_args))]
+            agui_display["a2ui_operations"].extend(json.loads(a2ui.render(operations))["a2ui_operations"])
             break
 
-        # === 处理文本类型 ===
-        if type_ == "text":
-            raise NotImplementedError("Text type rendering not implemented in this snippet.")
+        if type_ in {"markdown", "text"}:
+            display_messages.append(
+                {
+                    "type": "markdown",
+                    "title": str(item.get("title") or "Result"),
+                    "content": str(item.get("content") or ""),
+                }
+            )
+            continue
 
-        # === 处理表格类型 ===
         elif type_ == "table":
-            columns = item.get("columns", [])  # 预期格式: [{"key": "id", "label": "ID"}, ...]
-            rows = item.get("rows", [])
-            title = item.get("title", "Table Data")
+            components = _build_table_components(tool_name, query_args, item)
+            data = _build_table_data(item, query_args)
+        else:
+            continue
 
-            # --- A. 动态构建组件列表 ---
-            components = []
+        operations = [a2ui.create_surface(surface_id), a2ui.update_components(surface_id, components), a2ui.update_data_model(surface_id, data)]
+        agui_display["a2ui_operations"].extend(json.loads(a2ui.render(operations))["a2ui_operations"])
 
-            # 1. Root Container (包含标题、表头、列表、分页)
-            components.append(
-                {
-                    "id": "root",
-                    "component": {
-                        "Column": {"children": {"explicitList": ["tableTitle", "tableHeader", "tableBody", "paginationRow"]}, "alignment": "stretch", "distribution": "start"}
-                    },
-                }
-            )
+    if agui_display["a2ui_operations"]:
+        display_messages.append(agui_display)
 
-            # 2. Table Title
-            components.append({"id": "tableTitle", "component": {"Text": {"text": {"literalString": title}, "usageHint": "h3"}}})
+    return display_messages
 
-            # 3. 动态表头 (Header Row)
-            header_child_ids = []
-            for col in columns:
-                col_id = f"header_{col}"
-                header_child_ids.append(col_id)
-                components.append(
-                    {
-                        "id": col_id,
-                        "component": {
-                            "Text": {
-                                "text": {"literalString": col},
-                                "usageHint": "caption",
-                                "weight": 1,  # 均匀分布
-                            }
-                        },
-                    }
+
+def _build_table_components(tool_name: str, query_args: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
+    columns = [str(column) for column in item.get("columns", [])]
+    rows = _table_rows_to_records(columns, item.get("rows", []))
+    title = str(item.get("title") or "Table Data")
+    page_number = int(query_args.get("page", 1))
+
+    components: list[dict[str, Any]] = [
+        {"id": "root", "component": "Column", "children": ["tableTitle", "tableHeader", *[f"row_{idx}" for idx in range(len(rows))], "paginationRow"], "align": "stretch"},
+        {"id": "tableTitle", "component": "Text", "text": title, "variant": "h3"},
+        {"id": "tableHeader", "component": "Row", "children": [f"header_{idx}" for idx in range(len(columns))], "justify": "spaceBetween", "align": "center"},
+        {"id": "paginationRow", "component": "Row", "children": ["prevBtn", "pageInfo", "nextBtn"], "justify": "center", "align": "center"},
+        {"id": "prevBtn", "component": "Button", "child": "prevBtnText", "action": {"event": {"name": tool_name, "context": {"query_args": {**query_args, "page": page_number}}}}},
+        {"id": "prevBtnText", "component": "Text", "text": "Previous"},
+        {"id": "pageInfo", "component": "Text", "text": f"Page {page_number}", "variant": "caption"},
+        {
+            "id": "nextBtn",
+            "component": "Button",
+            "child": "nextBtnText",
+            "action": {"event": {"name": tool_name, "context": {"query_args": {**query_args, "page": page_number + 2}}}},
+        },
+        {"id": "nextBtnText", "component": "Text", "text": "Next"},
+    ]
+
+    for idx, column in enumerate(columns):
+        components.append({"id": f"header_{idx}", "component": "Text", "text": column, "variant": "caption"})
+
+    for row_idx, row in enumerate(rows):
+        row_child_ids = []
+        for col_idx, column in enumerate(columns):
+            cell_id = f"row_{row_idx}_cell_{col_idx}"
+            row_child_ids.append(cell_id)
+            components.append({"id": cell_id, "component": "Text", "text": str(row.get(column, ""))})
+        components.append({"id": f"row_{row_idx}", "component": "Row", "children": row_child_ids, "justify": "spaceBetween", "align": "center"})
+
+    return components
+
+
+def _build_table_data(item: dict[str, Any], query_args: dict[str, Any]) -> dict[str, Any]:
+    columns = [str(column) for column in item.get("columns", [])]
+    page_number = int(query_args.get("page", 1))
+    return {
+        "title": str(item.get("title") or "Table Data"),
+        "columns": columns,
+        "rows": _table_rows_to_records(columns, item.get("rows", [])),
+        "pageInfo": f"Page {page_number}",
+        "isFirstPage": page_number <= 1,
+        "isLastPage": False,
+    }
+
+
+def _table_rows_to_records(columns: list[str], rows: list[list[str | int | Any]]) -> list[dict[str, Any]]:
+    return [dict(zip(columns, row_data, strict=False)) for row_data in rows]
+
+
+def _normalize_openai_content_blocks(message: AnyMessage) -> AnyMessage:
+    content = message.content
+    if not isinstance(content, list):
+        return message
+
+    normalized_content: list[Any] = []
+    reasoning_content: list[str] = []
+    changed = False
+    for block in content:
+        if isinstance(block, str):
+            changed = True
+            if block.strip():
+                normalized_content.append({"type": "text", "text": block})
+        elif isinstance(block, dict) and block.get("type") == "thinking":
+            changed = True
+            thinking_text = block.get("thinking") or block.get("text") or block.get("content")
+            if isinstance(thinking_text, str) and thinking_text.strip():
+                reasoning_content.append(thinking_text)
+        else:
+            normalized_content.append(block)
+
+    if not changed:
+        return message
+    update: dict[str, Any] = {"content": normalized_content or ""}
+    if isinstance(message, AIMessage) and reasoning_content and not message.additional_kwargs.get("reasoning_content"):
+        update["additional_kwargs"] = {**message.additional_kwargs, "reasoning_content": "\n".join(reasoning_content)}
+    return message.model_copy(update=update)
+
+
+def _message_type_counts(messages: list[AnyMessage]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for message in messages:
+        message_type = getattr(message, "type", type(message).__name__)
+        counts[message_type] = counts.get(message_type, 0) + 1
+    return counts
+
+
+class DingMiddleware(AgentMiddleware):
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelCallResult:
+        all_messages = request.messages
+        filtered_messages: list[AnyMessage] = [
+            _normalize_openai_content_blocks(msg) for msg in all_messages if isinstance(msg, SystemMessage | HumanMessage | AIMessage | ToolMessage)
+        ]
+        model_settings = {**request.model_settings, "parallel_tool_calls": False}
+        logger.info(
+            "Agent model call started: input_messages={}, filtered_messages={}, message_types={}, parallel_tool_calls={}",
+            len(all_messages),
+            len(filtered_messages),
+            _message_type_counts(filtered_messages),
+            model_settings["parallel_tool_calls"],
+        )
+        request = request.override(messages=filtered_messages, model_settings=model_settings)
+        try:
+            result = await handler(request)
+        except Exception:
+            logger.exception("Agent model call failed: filtered_messages={}, message_types={}", len(filtered_messages), _message_type_counts(filtered_messages))
+            raise
+
+        logger.info("Agent model call completed: result_type={}", type(result).__name__)
+
+        return result
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        tool_call = request.tool_call
+        tool_call_id = tool_call.get("id") or "unknown_tool_call_id"
+        tool_name = request.tool.name if request.tool else "tool"
+        tool_args = tool_call.get("args", {})
+        logger.info(
+            "Agent tool call started: tool_name={}, tool_call_id={}, arg_keys={}",
+            tool_name,
+            tool_call_id,
+            sorted(tool_args) if isinstance(tool_args, dict) else [],
+        )
+
+        try:
+            result = await handler(request)
+
+            # --- 分支 A: 处理 ToolMessage ---
+            if isinstance(result, ToolMessage):
+                content = result.content
+                artifact = None
+                data = {}
+                if result.artifact:
+                    structured_content = result.artifact["structured_content"]
+                    if isinstance(structured_content, dict):
+                        data = structured_content
+                    elif isinstance(structured_content, str) and structured_content.strip():
+                        try:
+                            data = json.loads(structured_content)
+                        except json.JSONDecodeError:
+                            pass  # 保持默认的 model_text
+
+                if isinstance(data, dict) and "display" in data:
+                    artifact = cast(list[dict[str, Any]], data.get("display"))
+                    model_text = data.get("model_text", content)
+                else:
+                    model_text = content
+
+                # 构建消息列表
+                collected_messages: list = [ToolMessage(content=model_text, tool_call_id=tool_call_id, artifact=artifact)]
+
+                # 如果有 artifact，生成 ActivityMessage
+                if artifact:
+                    agui_display = mcp_artifact_to_agui_display(
+                        tool_name=tool_name,
+                        query_args=tool_call.get("args", {}),
+                        surface_base_id=tool_call_id,
+                        artifact=artifact,
+                    )
+                    collected_messages.append(ActivityMessage(id=f"{tool_call_id}:activity", content=agui_display))
+
+                logger.info(
+                    "Agent tool call completed: tool_name={}, tool_call_id={}, result_type=ToolMessage, has_artifact={}, emitted_messages={}",
+                    tool_name,
+                    tool_call_id,
+                    bool(artifact),
+                    len(collected_messages),
                 )
+                return Command(update={"messages": collected_messages})
 
-            components.append({"id": "tableHeader", "component": {"Row": {"children": {"explicitList": header_child_ids}, "distribution": "spaceBetween", "alignment": "center"}}})
-
-            # 4. 动态行模板 (Row Template)
-            # 这里是关键：template 中的组件绑定相对路径
-            row_child_ids = []
-            for col in columns:
-                cell_id = f"cell_{col}"
-                row_child_ids.append(cell_id)
-                components.append(
-                    {
-                        "id": cell_id,
-                        "component": {
-                            "Text": {
-                                # 动态绑定：如果列key是 "email"，路径就是 "/email"
-                                "text": {"path": f"/{col}"},
-                                "weight": 1,
-                            }
-                        },
-                    }
+            # --- 分支 B: 处理 Command ---
+            elif isinstance(result, Command):
+                # 如果是 Graph 更新，不需要追加全部历史消息，LangGraph 的 add_messages reducer 会自动处理追加。
+                # 之前在这里直接使用 append 会导致 state 原地突变并在多轮对话中引起无限复制消息的问题。
+                update = result.update if isinstance(result.update, dict) else {}
+                logger.info(
+                    "Agent tool call completed: tool_name={}, tool_call_id={}, result_type=Command, update_keys={}",
+                    tool_name,
+                    tool_call_id,
+                    sorted(update),
                 )
+                return result
 
-            components.append({"id": "rowTemplate", "component": {"Row": {"children": {"explicitList": row_child_ids}, "distribution": "spaceBetween", "alignment": "center"}}})
-
-            # 5. 列表容器 (The List)
-            components.append(
-                {
-                    "id": "tableBody",
-                    "component": {
-                        "List": {
-                            "children": {
-                                "template": {
-                                    "componentId": "rowTemplate",
-                                    "dataBinding": "/rows",  # 绑定到数据模型的 /rows 数组
-                                }
-                            },
-                            "direction": "vertical",
-                        }
-                    },
-                }
-            )
-
-            # 6. 分页控件
-            page_number = int(query_args.get("page", 1))
-            components.extend(
-                [
-                    {
-                        "id": "paginationRow",
-                        "component": {"Row": {"children": {"explicitList": ["prevBtn", "pageInfo", "nextBtn"]}, "distribution": "center", "alignment": "center"}},
-                    },
-                    {
-                        "id": "prevBtn",
-                        "component": {
-                            "Button": {
-                                "child": "prevBtnText",
-                                "action": {
-                                    "name": tool_name,
-                                    "context": [
-                                        {
-                                            "key": "query_args",
-                                            "value": {"literalString": json.dumps({**query_args, "page": page_number})},
-                                        }
-                                    ],
-                                },
-                                "disabled": {"path": "/isFirstPage"},
-                            }
-                        },
-                    },
-                    {"id": "prevBtnText", "component": {"Text": {"text": {"literalString": "Previous"}}}},
-                    {"id": "pageInfo", "component": {"Text": {"text": {"path": "/pageInfo"}, "usageHint": "caption"}}},
-                    {
-                        "id": "nextBtn",
-                        "component": {
-                            "Button": {
-                                "child": "nextBtnText",
-                                "action": {
-                                    "name": tool_name,
-                                    "context": [
-                                        {
-                                            "key": "query_args",
-                                            "value": {"literalString": json.dumps({**query_args, "page": page_number + 2})},
-                                        }
-                                    ],
-                                },
-                                "disabled": {"path": "/isLastPage"},
-                            }
-                        },
-                    },
-                    {"id": "nextBtnText", "component": {"Text": {"text": {"literalString": "Next"}}}},
-                ]
-            )
-
-            # 添加 SurfaceUpdate 消息
-            agui_display["operations"].append({"surfaceUpdate": {"surfaceId": surface_id, "components": components}})
-
-            # --- B. 数据模型转换 ---
-            # 将 Python 字典列表转换为 A2UI 的 adjacency list 格式
-            a2ui_rows = _transform_rows_to_a2ui(columns, rows)
-
-            # 添加 DataModelUpdate 消息
-            agui_display["operations"].append(
-                {
-                    "dataModelUpdate": {
-                        "surfaceId": surface_id,
-                        "contents": [
-                            {"key": "rows", "valueMap": a2ui_rows},
-                            # 初始化分页状态
-                            {"key": "pageInfo", "valueString": "Page 1"},
-                            {"key": "isFirstPage", "valueBoolean": True},
-                            {"key": "isLastPage", "valueBoolean": False},
-                        ],
-                    }
-                }
-            )
-        if not update_data:
-            agui_display["operations"].append({"beginRendering": {"surfaceId": surface_id, "root": "root", "styles": {"primaryColor": "#1976D2", "font": "Roboto"}}})
-
-    return agui_display
-
-
-def _transform_rows_to_a2ui(columns: list[str], rows: list[list[str | int | Any]]) -> list[dict]:
-    """
-    辅助函数：将 [{'id': 1, 'name': 'A'}] 转换为 A2UI 的 valueMap 结构
-    A2UI 数组本质上是一个 Map，Key 是索引字符串 "0", "1", ...
-    """
-    a2ui_list = []
-    for idx, row_data in enumerate(rows):
-        # 构建每一行的数据对象
-        row_fields = []
-        for k, v in zip(columns, row_data, strict=False):
-            entry: dict[str, Any] = {"key": k}
-            # 根据类型填充 valueString, valueNumber 等
-            if isinstance(v, bool):
-                entry["valueBoolean"] = v
-            elif isinstance(v, int | float):
-                entry["valueNumber"] = v
             else:
-                entry["valueString"] = str(v)
-            row_fields.append(entry)
+                raise ValueError(f"Unsupported result type: {type(result)}")
 
-        # 将行数据放入列表，Key 是索引
-        a2ui_list.append({"key": str(idx), "valueMap": row_fields})
-    return a2ui_list
+        except Exception as e:
+            logger.exception("Agent tool call failed: tool_name={}, tool_call_id={}", tool_name, tool_call_id)
+            return Command(update={"messages": [ToolMessage(content=f"Execution Error: {str(e)}", tool_call_id=tool_call_id, is_error=True)]})
+
+
+class JsonTodoListMiddleware(TodoListMiddleware):
+    """
+    A subclass of TodoListMiddleware that ensures the `write_todos` tool
+    returns a valid JSON string result, fixing frontend parsing issues.
+    """
+
+    def __init__(
+        self,
+        *,
+        system_prompt: str = WRITE_TODOS_SYSTEM_PROMPT,
+        tool_description: str = WRITE_TODOS_TOOL_DESCRIPTION,
+    ) -> None:
+        # 初始化父类
+        super().__init__(system_prompt=system_prompt, tool_description=tool_description)
+
+        # 重新定义 write_todos 工具，覆盖父类的实现
+        @tool(description=self.tool_description)
+        def write_todos(todos: list[Todo], tool_call_id: Annotated[str, InjectedToolCallId]) -> Command[Any]:
+            """Create and manage a structured task list for your current work session."""
+
+            return Command(
+                update={
+                    "todos": todos,
+                    "messages": [
+                        ToolMessage(
+                            f"Updated todo list to {todos}",
+                            tool_call_id=tool_call_id,
+                            name="write_todos",
+                        )
+                    ],
+                }
+            )
+
+        # 将覆盖后的工具赋值给 self.tools
+        self.tools = [write_todos]
+
+
+middleware = [DingMiddleware(), JsonTodoListMiddleware()]
 
 
 def build_simple_react_agent(
     name: str,
     llm: BaseChatModel,
-    tools: list[StructuredTool],
+    tools: list[BaseTool],
     system_prompt: str | None = None,
-    max_iterations: int = 6,
-    stop_when_no_tool: bool = True,
+    debug: bool = False,
 ) -> CompiledStateGraph:
-    name_to_tool = {t.name: t for t in tools}
-    LLM_SAFE_TYPES = (SystemMessage, HumanMessage, AIMessage, ToolMessage)
-
-    async def model_node(state: SimpleAgentState) -> dict[str, Any]:
-        iteration = state.get("iteration", 0)
-        # 简单的循环保护
-        if iteration >= max_iterations:
-            return {"messages": [AIMessage(content="Max iterations reached.")]}
-
-        all_messages = state.get("messages", [])
-        filtered_messages = [msg for msg in all_messages if isinstance(msg, LLM_SAFE_TYPES)]
-
-        if system_prompt:
-            input_messages = [SystemMessage(content=system_prompt)] + filtered_messages
-        else:
-            input_messages = filtered_messages
-
-        print(f"[Agent: {name}] Invoking model with messages: {input_messages}")
-        response = await llm.bind_tools(tools).ainvoke(input_messages)
-        print(f"[Agent: {name}] Model Response: {response}")
-
-        return {
-            "messages": [response],
-            "iteration": iteration + 1,
-        }
-
-    async def tools_node(state: SimpleAgentState, config: RunnableConfig) -> Command:
-        last_msg = state.get("messages", [])[-1]
-        if not isinstance(last_msg, AIMessage) or not last_msg.tool_calls:
-            return Command(update={})
-
-        # 获取插件配置
-        plugin_configs = config.get("configurable", {}).get("assistant_plugin_configs", {})
-
-        # 用于收集本轮循环中产生的"普通"消息（非 Handoff）
-        collected_messages: list[BaseMessage] = []
-
-        for tc in last_msg.tool_calls:
-            tool_name = tc["name"]
-            # FIXME:
-            # 这里应该用plugin name而不是tool name
-            tool = name_to_tool.get(tool_name)
-
-            # 1. 处理工具不存在的情况
-            if not tool:
-                collected_messages.append(ToolMessage(content=f"Error: Tool '{tool_name}' not found.", tool_call_id=tc["id"], is_error=True))
-                continue
-
-            # 2. 注入配置参数
-            args = tc.get("args", {}).copy()
-            if tool.tags and (plugin_name := tool.tags[0]):
-                if cfg := plugin_configs.get(plugin_name):
-                    if len(cfg.get("config", {})) > 0:
-                        args["plugin_config"] = cfg.get("config")
-
-            try:
-                # 3. 执行工具
-                result = await tool.ainvoke(
-                    {
-                        "id": tc["id"],
-                        "name": tool_name,
-                        "args": args,
-                        "tool_call_id": tc["id"],
-                        "type": "tool_call",
-                    }
-                )
-
-                if not isinstance(result, Command):
-                    raise ValueError(f"Tool {tool_name} did not return a Command object.")
-
-                if result.graph:
-                    # 1. 获取当前所有的历史消息
-                    all_current_messages: list = list(state.get("messages", []))
-
-                    all_current_messages.extend(collected_messages)
-
-                    handoff_tool_msgs = result.update.get("messages", [])
-                    all_current_messages.extend(handoff_tool_msgs)
-
-                    return Command(
-                        goto=result.goto,
-                        graph=result.graph,
-                        update={
-                            "messages": all_current_messages,
-                        },
-                    )
-
-                else:
-                    raw_updates = result.update.get("messages", [])
-                    for msg in raw_updates:
-                        if msg.type == "tool":
-                            # 处理 MCP Artifacts
-                            artifact = getattr(msg, "artifact", None)
-                            if not artifact:
-                                collected_messages.append(msg)
-                                continue
-
-                            # 生成 AGUI Display
-                            agui_display = mcp_artifact_to_agui_display(
-                                tool_name=tool_name,
-                                query_args=tc.get("args", {}),
-                                surface_base_id=msg.tool_call_id,
-                                artifact=artifact,
-                            )
-                            collected_messages.append(msg)
-                            collected_messages.append(ActivityMessage(content=agui_display))
-                        else:
-                            # 非 ToolMessage 直接添加 (例如额外的 AIMessage)
-                            collected_messages.append(msg)
-
-            except Exception as e:
-                collected_messages.append(ToolMessage(content=f"Execution Error: {str(e)}", tool_call_id=tc["id"], is_error=True))
-
-        # 循环结束，没有触发 Handoff，返回本轮所有工具的增量更新
-        return Command(
-            update={
-                "messages": collected_messages,
-            }
-        )
-
-    def route_after_model(state: SimpleAgentState):
-        messages = state.get("messages", [])
-        if not messages:
-            return END
-
-        last_msg = messages[-1]
-        has_tool_calls = isinstance(last_msg, AIMessage) and bool(last_msg.tool_calls)
-
-        if has_tool_calls and state.get("iteration", 0) <= max_iterations:
-            return "tools"
-
-        if stop_when_no_tool or not has_tool_calls:
-            return END
-
-        return END
-
-    async def ui_node(state: SimpleAgentState) -> Command:
-        action = state.get("a2ui_action", {})
-        user_action = action.get("userAction", {})
-        if not user_action:
-            raise ValueError("No user_action found in a2ui_action")
-
-        tool_name = user_action.get("name")
-        if tool_name and tool_name in name_to_tool:
-            tool = name_to_tool[tool_name]
-            context = user_action.get("context", {})
-            surface_id = context.get("surfaceId", "")
-            surface_base_id = "-".join(surface_id.split("-")[:-1])
-            query_args = json.loads(context.get("query_args", "{}"))
-            # FIXME: query_args还要加上工具的配置参数
-            result = await tool.ainvoke(
-                {
-                    "id": "agui_action",
-                    "name": tool_name,
-                    "args": query_args,
-                    "tool_call_id": "agui_action",
-                    "type": "tool_call",
-                }
-            )
-            tool_message = result.update.get("messages", [])[0]
-            artifact = tool_message.artifact
-            if artifact:
-                agui_display = mcp_artifact_to_agui_display(
-                    tool_name,
-                    query_args,
-                    surface_base_id=surface_base_id,
-                    artifact=artifact,
-                    update_data=True,
-                )
-                return Command(
-                    update={
-                        "messages": [
-                            tool_message,
-                            ActivityMessage(content=[agui_display]),
-                        ]
-                    },
-                    goto=END,
-                )
-
-        return Command(goto="model")
-
-    def route_entry(state: SimpleAgentState):
-        # 如果状态中有 UI 动作，优先进入 UI 处理节点
-        if state.get("a2ui_action"):
-            return "ui_handler"
-        return "model"
-
-    workflow = StateGraph(SimpleAgentState)
-    workflow.add_node("model", model_node)
-    workflow.add_node("tools", tools_node)
-    workflow.add_node("ui_handler", ui_node)
-    workflow.set_conditional_entry_point(
-        route_entry,
-        {
-            "ui_handler": "ui_handler",
-            "model": "model",
-        },
+    logger.info("Building simple react agent: name={}, tool_count={}, has_system_prompt={}", name, len(tools), bool(system_prompt))
+    agent = create_agent(
+        model=llm,
+        tools=tools,
+        system_prompt=system_prompt,
+        middleware=middleware,
+        debug=debug,
     )
-    workflow.add_conditional_edges("model", route_after_model)
-    workflow.add_edge("tools", "model")
-
-    compiled = workflow.compile()
-    compiled.name = name
-    return compiled
+    agent.name = name
+    return agent

@@ -2,11 +2,14 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from uuid import UUID
 
+from langchain.tools import BaseTool
+from loguru import logger
+
 from dingent.core.assistants.assistant_factory import AssistantFactory
 from dingent.core.utils import normalize_agent_name
 from dingent.core.workflows.schemas import ExecutableWorkflow
 from dingent.engine.agents.simple_agent import build_simple_react_agent
-from dingent.engine.agents.tools import create_handoff_tool, mcp_tool_wrapper
+from dingent.engine.agents.tools import create_handoff_tool
 
 
 @asynccontextmanager
@@ -28,20 +31,53 @@ async def create_assistant_graphs(
         assistant_id_map: Optional mapping from assistant names to their database IDs
     """
     assistant_graphs = {}
+    logger.info("Creating assistant graphs: workflow={}, assistant_count={}", workflow.name, len(workflow.assistant_configs))
 
     # 3. 构建每个 Agent 图
     async with AsyncExitStack() as stack:
         for name, assistant_config in workflow.assistant_configs.items():
+            logger.info("Preparing assistant graph: workflow={}, assistant={}", workflow.name, name)
             rt = await assistant_factory.create_runtime(assistant_config)
             raw_tools = await stack.enter_async_context(rt.load_tools())
-            wrapped_tools = [mcp_tool_wrapper(t, log_method) for t in raw_tools]
+
+            tool_configs = {tc["name"]: tc for p in assistant_config.plugins for tc in p.tool_configs}
+            transformed_tools: list[BaseTool] = []
+            for tool in raw_tools:
+                config = tool_configs.get(tool.tool.name)
+                original_tool = tool.tool
+                custom_runner = tool.run
+
+                async def run_adapter(
+                    _runner=custom_runner,
+                    **kwargs,
+                ):
+                    return await _runner(kwargs)
+
+                original_tool.coroutine = run_adapter
+
+                if config:
+                    if "enabled" in config and not config["enabled"]:
+                        continue
+                    if "description" in config and config["description"]:
+                        tool.tool.description = config["description"]
+                transformed_tools.append(original_tool)
 
             # 筛选相关的 Handoff 工具
+
             destinations = workflow.adjacency_map.get(name, [])
             handoff_tools = [
                 create_handoff_tool(normalize_agent_name(dest), description=f"{workflow.assistant_configs[normalize_agent_name(dest)].description}", log_method=log_method)
                 for dest in destinations
             ]
+            logger.info(
+                "Assistant tools prepared: workflow={}, assistant={}, raw_tools={}, enabled_tools={}, handoff_tools={}, destinations={}",
+                workflow.name,
+                name,
+                len(raw_tools),
+                len(transformed_tools),
+                len(handoff_tools),
+                destinations,
+            )
 
             # Resolve LLM for this specific assistant
             if callable(llm_or_resolver) and assistant_id_map:
@@ -55,13 +91,14 @@ async def create_assistant_graphs(
                 # Legacy: direct LLM instance
                 llm = llm_or_resolver
 
-            # 构建 Agent
             agent = build_simple_react_agent(
                 name=name,
                 llm=llm,
-                tools=handoff_tools + wrapped_tools,
-                system_prompt=None,
+                tools=handoff_tools + transformed_tools,
+                system_prompt=assistant_config.instructions,
             )
             assistant_graphs[name] = agent
+            logger.info("Assistant graph ready: workflow={}, assistant={}, total_tools={}", workflow.name, name, len(handoff_tools) + len(transformed_tools))
 
+        logger.info("Assistant graphs created: workflow={}, graph_count={}", workflow.name, len(assistant_graphs))
         yield assistant_graphs

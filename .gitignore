@@ -210,3 +210,16 @@ __marimo__/
 .streamlit/secrets.toml
 
 src/dingent/static
+/bio_workspace
+/data
+/.devenv
+.gitnexus
+
+# Playwright
+.playwright-cli/
+.playwright-e2e*.db
+.playwright-e2e*.db-shm
+.playwright-e2e*.db-wal
+ui/test-results/
+src/bio_workspace/
+src/data/

@@ -3,7 +3,14 @@ import { Check, ChevronsUpDown } from "lucide-react";
 import { twMerge } from "tailwind-merge";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui/command";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "../ui/command";
 
 // 1. Define a more explicit type for the options
 type Option = { label: string; value: string };
@@ -24,7 +31,6 @@ export function SearchableSelect({
   emptyText = "No results.",
   className,
 }: SearchableSelectProps) {
-  console.log("options:", options);
   const [open, setOpen] = React.useState(false);
 
   // 2. Normalize options to a consistent format internally

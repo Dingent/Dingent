@@ -1,13 +1,8 @@
-> [!WARNING]
-> **Documentation Outdated / 文档已过期**
+> This project is currently under **rapid development**. For the latest and most accurate documentation, please visit:
+> **[ngdc.cncb.ac.cn/dingent](https://ngdc.cncb.ac.cn/dingent/)**
 >
-> This project is currently under **rapid development**. The content in this
-> README is **outdated** and may not reflect the latest features or
-> architecture. Please refer to the code or wait for upcoming documentation
-> updates.
->
-> 本项目当前处于**快速迭代开发**阶段。本 README
-> 中的内容**已经过时**，可能无法反映最新的功能或架构变更。请以最新代码为准或等待文档更新。
+> 最新文档和使用指南，请访问：
+> **[ngdc.cncb.ac.cn/dingent](https://ngdc.cncb.ac.cn/dingent/)**
 
 <div align="center"><a name="readme-top"></a>
 
@@ -15,13 +10,6 @@
 
 **A powerful, yet user-friendly LLM Agent framework designed to streamline the
 entire development lifecycle of intelligent applications.**
-
-**English** · [简体中文](./README.zh-CN.md)
-
-[Quick Start](https://saya-ashen.github.io/Dingent/docs/intro%23quick-start) |
-[Installation](https://saya-ashen.github.io/Dingent/docs/getting-started/installation)
-|
-[Configuration](https://saya-ashen.github.io/Dingent/docs/getting-started/configuration)
 
 </div>
 
@@ -99,34 +87,8 @@ frontend-backend communication... These tasks are tedious and repetitive.
 
 ## 🚀 Quick Start
 
-Create and run a fully functional agent project in just a few minutes.
+Just download the latest executable for your platform from the releases page and run it.
 
-### 1. Prerequisites
-
-Before you begin, ensure your development environment has the following
-installed:
-
-- [**uv**](https://docs.astral.sh/uv/getting-started/installation/): A very fast
-  Python package installer and resolver.
-
-<!-- end list -->
-
-```bash
-# On macOS and Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# On Windows
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-### 2. Initialize and Run Your Project
-
-Navigate to an empty directory where you want to create your project and run the
-development server.
-
-```bash
-mkdir my-awesome-agent
-cd my-awesome-agent
 
 # Run the development server
 uvx dingent dev # or uvx dingent run
@@ -232,32 +194,38 @@ my-awesome-agent/
 - **✅ 1. Documentation & Tutorials**
 
   - [x] **Basic Docs:** Installation and configuration guides.
-  - [ ] **Core Concepts:** In-depth explanations of key features and design.
+  - [x] **Core Concepts:** In-depth explanations of key features and design.
   - [ ] **Plugin Dev Guide:** How to build your own plugins.
-  - [ ] **End-to-End Tutorials:** Complete, step-by-step project examples.
+  - [x] **End-to-End Tutorials:** Complete, step-by-step project examples.
 
-- **⏳ 2. Admin Dashboard**
+- **✅ 2. Admin Dashboard**
 
   - [x] **Core UI**: Fully functional dashboard for managing assistants,
         workflows, and settings.
   - [x] **Plugin Management**: Add/remove plugins directly from the UI.
-  - [x] **Advanced Workflow Editor**: More powerful tools for building complex
-        agent behaviors.
+  - [x] **Advanced Workflow Editor**: Visual node-based tools for building complex
+        agent behaviors and logic flow.
 
-- **💡 3. Plugin System**
+- **✅ 3. Plugin System**
 
   - [x] **Auto-Discovery**: Automatically loads plugins from the `plugins/`
         directory.
   - [ ] ~~**Plugin CLI:** Install and manage plugins via the command line.~~
         (Superseded by UI management in the Admin Dashboard)
-  - [x] **Plugin Marketplace:** Discover, search, and download community
-        plugins.
+  - [x] **Plugin Marketplace:** Discover, search, and dynamically mount community
+        plugins via the dashboard.
 
-- **📦 4. Core Plugins**
+- **✅ 4. Core Plugins**
 
-  - [x] **Database Plugin:** Connect to mainstream databases.
-  - [ ] **Knowledge Base Q\&A Plugin:** Quickly build a Q\&A application on your
-        documents.
+  - [x] **Database Plugin:** Connect to mainstream databases via specialized Text2SQL engines.
+  - [x] **Knowledge Base Q\&A Plugin:** Intelligent retrieval and QA using entity-enhanced RAG and vector databases.
+  - [x] **Heterogeneous Integration:** Out-of-the-box support for cross-platform data sources (e.g., GenBase, iDog, BioKA).
+
+- **✅ 5. Core Architecture & Deployment**
+
+  - [x] **Dynamic Workflow Engine:** `GraphFactory` for zero-code, Just-In-Time (JIT) compilation of multi-agent state machines.
+  - [x] **MCP Native:** Deep integration with the Model Context Protocol for decoupled, decentralized tool execution and sandboxing.
+  - [x] **Zero-Config Deployment:** Heterogeneous dual-process packaging (Next.js + PyInstaller) for seamless cross-platform setup.
 
 ## 🤝 How to Contribute
 

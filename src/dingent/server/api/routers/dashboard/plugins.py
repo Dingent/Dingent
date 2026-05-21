@@ -26,9 +26,8 @@ async def list_available_plugins(
 async def remove_plugin_global(
     plugin_id: str,
     plugin_manager: PluginManager = Depends(get_plugin_manager),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),  # noqa: ARG001
 ):
-    assert user
     raise HTTPException(status_code=403, detail="Not authorized")  # TODO: admin check
     try:
         plugin_manager.delete_plugin(plugin_id=plugin_id)

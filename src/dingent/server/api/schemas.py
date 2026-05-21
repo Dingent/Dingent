@@ -2,70 +2,16 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import fsspec
 import toml
 from async_lru import alru_cache
 from packaging.version import InvalidVersion, Version
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
-# --- Admin Response Models ---
-
-
-class ToolAdminDetail(BaseModel):
-    name: str
-    description: str
-    enabled: bool
-
-
-class AppAdminDetail(BaseModel):
-    current_workflow: str | None = None
-    workflows: list[dict[str, str]] = Field(default_factory=list)
-    llm: dict[str, Any]
-
-
-# --- Request Models ---
-
-
-class AddPluginRequest(BaseModel):
-    plugin_id: str
-    config: dict[str, Any] | None = None
-    enabled: bool = True
-    tools_default_enabled: bool = True
-
-
-class UpdatePluginConfigRequest(BaseModel):
-    config: dict[str, Any] | None = None
-    enabled: bool | None = None
-    tools_default_enabled: bool | None = None
-    tools: list[str] | None = None
-
-
-class SetActiveWorkflowRequest(BaseModel):
-    workflow_id: str
-
-
-class AgentExecuteRequest(BaseModel):
-    threadId: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    state: dict[str, Any] = {}
-    messages: list[dict[str, Any]] = []
-    actions: list[dict[str, Any]] = []
-    nodeName: str | None = None
-    config: dict[str, Any] | None = None
-    metaEvents: list[dict[str, Any]] = []
-
-
-class ActionExecuteRequest(BaseModel):
-    name: str
-    arguments: dict[str, Any] = {}
-
-
-class AgentStateRequest(BaseModel):
-    threadId: str
-
+from dingent.core.market_schemas import MarketItem, MarketItemCategory, MarketMetadata
 
 # --- Market Models ---
 MARKET_REPO_OWNER = "saya-ashen"
@@ -77,76 +23,6 @@ GITHUB_CONTENT_BASE = "https://ghfast.top/https://raw.githubusercontent.com/{own
 MARKET_REPO_OWNER = "saya-ashen"
 MARKET_REPO_NAME = "dingent-hub"
 MARKET_BRANCH = "main"
-
-
-class MarketDownloadRequest(BaseModel):
-    item_id: str
-    category: str  # "plugin" | "assistant" | "workflow"
-
-
-class MarketDownloadResponse(BaseModel):
-    success: bool
-    message: str
-    installed_path: str | None = None
-
-
-class MarketItemCategory(str, Enum):
-    """Enumeration for different categories of items in the Dingent Hub."""
-
-    PLUGIN = "plugin"
-    ASSISTANT = "assistant"
-    WORKFLOW = "workflow"
-    ALL = "all"
-
-    def __str__(self) -> str:
-        """Return the string value of the enum member."""
-        return self.value
-
-
-class MarketMetadata(BaseModel):
-    version: str
-    updated_at: str
-    categories: dict[str, int]
-
-
-class MarketItem(BaseModel):
-    id: str
-    name: str
-    description: str | None = None
-    version: str | None = None
-    author: str | None = None
-    category: MarketItemCategory
-    tags: list[str] = []
-    license: str | None = None
-    readme: str | None = None
-    downloads: int | None = None
-    rating: float | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
-    is_installed: bool = False
-    installed_version: str | None = None
-    update_available: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_name_field(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            source_for_display_name = data.get("display_name") or data.get("name")
-            if source_for_display_name:
-                data["name"] = source_for_display_name
-
-        return data
-
-
-class MarketBackend(Protocol):
-    async def get_metadata(self) -> MarketMetadata: ...
-    async def list_items(
-        self,
-        category: MarketItemCategory,
-        installed_map_tuple: tuple[tuple[str, str], ...],
-    ) -> list[MarketItem]: ...
-    async def get_readme(self, item_id: str, category: MarketItemCategory) -> str | None: ...
-    async def download_item(self, item_id: str, category: MarketItemCategory, target_dir: Path) -> None: ...
 
 
 class GitHubMarketBackend:
@@ -163,15 +39,40 @@ class GitHubMarketBackend:
 
     def __init__(self, log_manager):
         self._log_manager = log_manager
+        self._fs = None
 
-        # 初始化 GitHub 文件系统
-        # 这里的 username/token 用于解决 API 限流问题
-        self.fs = fsspec.filesystem("github", org=MARKET_REPO_OWNER, repo=MARKET_REPO_NAME, sha=MARKET_BRANCH, username=os.getenv("GITHUB_USER"), token=os.getenv("GITHUB_TOKEN"))
+        self._fs_init_lock = asyncio.Lock()
 
     # --- 核心辅助：将 fsspec 的同步操作转为异步 ---
     async def _run_fs(self, func, *args, **kwargs):
         """在线程池中运行 fsspec 的同步操作，避免阻塞 Event Loop"""
         return await asyncio.to_thread(func, *args, **kwargs)
+
+    async def _get_fs(self):
+        """
+        懒加载获取 fsspec 实例。
+        如果尚未初始化，则在线程池中进行初始化。
+        """
+        if self._fs is not None:
+            return self._fs
+
+        async with self._fs_init_lock:
+            # 双重检查锁定 (Double-checked locking)
+            if self._fs is not None:
+                return self._fs
+
+            try:
+                # 将 fsspec 的初始化也放入线程池，因为它可能会进行网络验证
+                self._fs = await self._run_fs(
+                    fsspec.filesystem, "github", org=MARKET_REPO_OWNER, repo=MARKET_REPO_NAME, sha=MARKET_BRANCH, username=os.getenv("GITHUB_USER"), token=os.getenv("GITHUB_TOKEN")
+                )
+                self._log_manager.log_with_context("info", "GitHub FS initialized successfully")
+            except Exception as e:
+                self._log_manager.log_with_context("error", "Failed to initialize GitHub FS", context={"error": str(e)})
+                # 这里可以选择抛出异常，或者返回 None 让调用者处理
+                raise e
+
+            return self._fs
 
     # --- API 实现 ---
 
@@ -179,8 +80,9 @@ class GitHubMarketBackend:
     async def get_metadata(self) -> MarketMetadata:
         try:
             # 直接读取文件内容，就像读本地文件一样
-            if await self._run_fs(self.fs.exists, "market.json"):
-                content = await self._run_fs(self.fs.cat_file, "market.json")
+            fs = await self._get_fs()
+            if await self._run_fs(fs.exists, "market.json"):
+                content = await self._run_fs(fs.cat_file, "market.json")
                 return MarketMetadata.model_validate_json(content)
         except Exception as e:
             self._log_manager.log_with_context("error", "Metadata parse error", context={"error": str(e)})
@@ -192,9 +94,10 @@ class GitHubMarketBackend:
         path = f"{repo_dir}/{item_id}/README.md"
 
         try:
-            if await self._run_fs(self.fs.exists, path):
+            fs = await self._get_fs()
+            if await self._run_fs(fs.exists, path):
                 # fsspec 默认读取为 bytes，需要 decode
-                content_bytes = await self._run_fs(self.fs.cat_file, path)
+                content_bytes = await self._run_fs(fs.cat_file, path)
                 return content_bytes.decode("utf-8")
         except Exception:
             pass  # File not found or error
@@ -208,7 +111,8 @@ class GitHubMarketBackend:
         target_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            await self._run_fs(self.fs.get, remote_path, str(target_dir), recursive=True)
+            fs = await self._get_fs()
+            await self._run_fs(fs.get, remote_path, str(target_dir), recursive=True)
         except Exception as e:
             self._log_manager.log_with_context("error", "fsspec download failed", context={"remote": remote_path, "error": str(e)})
             raise
@@ -232,9 +136,8 @@ class GitHubMarketBackend:
         installed_map = dict(installed_map_tuple)
 
         try:
-            # fs.ls 列出目录内容
-            # detail=False 返回路径列表 ['owner/repo/plugins/plugin-a', ...]
-            paths = await self._run_fs(self.fs.ls, repo_dir, detail=False)
+            fs = await self._get_fs()
+            paths = await self._run_fs(fs.ls, repo_dir, detail=False)
         except FileNotFoundError:
             return []
 
@@ -264,7 +167,7 @@ class GitHubMarketBackend:
                 configs_to_read = [f"{remote_path}/pyproject.toml", f"{remote_path}/plugin.toml"]
 
             # 并发读取配置文件内容
-            read_tasks = [self._run_fs(self._safe_read_toml, p) for p in configs_to_read]
+            read_tasks = [self._safe_read_toml(p) for p in configs_to_read]
             config_contents = await asyncio.gather(*read_tasks)
 
             # 合并配置
@@ -304,11 +207,12 @@ class GitHubMarketBackend:
             self._log_manager.log_with_context("warning", "Item details error", context={"id": item_id, "error": str(e)})
             return None
 
-    def _safe_read_toml(self, path: str) -> dict | None:
+    async def _safe_read_toml(self, path: str) -> dict | None:
         """同步辅助函数：安全读取并解析 TOML"""
         try:
-            if self.fs.exists(path):
-                content = self.fs.cat_file(path)
+            fs = await self._get_fs()
+            if fs.exists(path):
+                content = fs.cat_file(path)
                 return toml.loads(content.decode("utf-8"))
         except Exception:
             pass

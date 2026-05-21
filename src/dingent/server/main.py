@@ -2,14 +2,9 @@ import os
 
 import uvicorn
 
-from .app import base_lifespan, create_app
-from .copilot.lifespan import create_extended_lifespan
+from .app import create_app
 
 app = create_app()
-
-
-extended_lifespan = create_extended_lifespan(base_lifespan)
-app.router.lifespan_context = extended_lifespan
 
 
 def start():

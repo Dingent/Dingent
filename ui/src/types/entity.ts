@@ -22,6 +22,7 @@ export type Assistant = {
   id: string;
   name: string;
   description?: string;
+  instructions?: string;
   enabled?: boolean;
   status?: string;
   plugins?: AssistantPlugin[];
