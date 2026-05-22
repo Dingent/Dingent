@@ -1,5 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatPage } from "./ChatPage";
 
 const updateThreadTitle = vi.fn();
@@ -139,6 +139,40 @@ describe("ChatPage", () => {
 
     expect(screen.getByText("Thinking Process...")).toBeInTheDocument();
     expect(screen.getByText("checking tools")).toBeInTheDocument();
+  });
+
+  it("logs aggregated chat response timings when a run completes", () => {
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => 100);
+    render(<ChatPage />);
+
+    act(() => {
+      agentSubscriber?.onEvent({ event: { type: "RUN_STARTED", runId: "run-1" } });
+      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", delta: "thinking" } });
+      agentSubscriber?.onEvent({ event: { type: "TEXT_MESSAGE_CONTENT", delta: "hello" } });
+      agentSubscriber?.onEvent({ event: { type: "TOOL_CALL_START" } });
+      agentSubscriber?.onEvent({ event: { type: "ACTIVITY_SNAPSHOT", messageId: "activity-live", content: { label: "live table" } } });
+      agentSubscriber?.onEvent({ event: { type: "RUN_FINISHED", runId: "run-1" } });
+    });
+
+    expect(consoleInfo).toHaveBeenCalledWith(
+      "[Dingent] chat response timings",
+      expect.objectContaining({
+        runId: "run-1",
+        terminalEvent: "RUN_FINISHED",
+        timeToFirstTokenMs: expect.any(Number),
+        totalDurationMs: expect.any(Number),
+        textDeltaCount: 1,
+        textCharCount: 5,
+        thinkingDeltaCount: 1,
+        thinkingCharCount: 8,
+        activityCount: 1,
+        toolCallCount: 1,
+      }),
+    );
+
+    consoleInfo.mockRestore();
+    performanceNow.mockRestore();
   });
 
   it("clears live thinking when switching threads", () => {

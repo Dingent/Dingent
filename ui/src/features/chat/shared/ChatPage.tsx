@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { useAgent, CopilotSidebar } from "@copilotkit/react-core/v2";
 import { useRenderToolCall } from "@copilotkit/react-core";
@@ -24,6 +24,34 @@ interface ChatPageProps {
   slug?: string;
 }
 
+interface ChatTimingStats {
+  agentName: string;
+  threadId: string | null;
+  runId?: string;
+  startedAtMs: number;
+  firstEventAtMs?: number;
+  runStartedAtMs?: number;
+  firstThinkingAtMs?: number;
+  firstActivityAtMs?: number;
+  firstTextStartAtMs?: number;
+  firstTokenAtMs?: number;
+  finishedAtMs?: number;
+  textDeltaCount: number;
+  textCharCount: number;
+  thinkingDeltaCount: number;
+  thinkingCharCount: number;
+  activityCount: number;
+  toolCallCount: number;
+}
+
+function elapsedMs(startMs: number, endMs?: number) {
+  return typeof endMs === "number" ? Math.round((endMs - startMs) * 100) / 100 : null;
+}
+
+function getDeltaLength(delta: unknown) {
+  return typeof delta === "string" ? delta.length : 0;
+}
+
 function shouldThrowOnActivitySnapshot() {
   if (typeof window === "undefined") return false;
 
@@ -43,6 +71,7 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
   const agent = useAgent({ agentId: agentName });
   const isAgentRunning = agent.agent.isRunning;
   const messages = agent.agent.messages;
+  const timingStatsRef = useRef<ChatTimingStats | null>(null);
   const snapshotActivityMessages = messages.filter((m) => m.role === "activity");
   const [streamingActivityMessages, setStreamingActivityMessages] = useState<any[]>([]);
   const activityMessages = useMemo(() => {
@@ -103,11 +132,64 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
     setStreamingActivityMessages([]);
     clearThinkingText();
     setIsThinking(false);
+    timingStatsRef.current = null;
   }, [activeThreadId, clearThinkingText, setIsThinking]);
   useEffect(() => {
     if (!agent.agent) return;
 
+    const ensureTimingStats = (event: any) => {
+      if (!timingStatsRef.current) {
+        timingStatsRef.current = {
+          agentName,
+          threadId: activeThreadId,
+          runId: event.runId || event.run_id,
+          startedAtMs: performance.now(),
+          textDeltaCount: 0,
+          textCharCount: 0,
+          thinkingDeltaCount: 0,
+          thinkingCharCount: 0,
+          activityCount: 0,
+          toolCallCount: 0,
+        };
+      }
+
+      return timingStatsRef.current;
+    };
+
+    const logTimingStats = (event: any) => {
+      const stats = timingStatsRef.current;
+      if (!stats) return;
+
+      stats.finishedAtMs = performance.now();
+      const baselineMs = stats.runStartedAtMs ?? stats.startedAtMs;
+      console.info("[Dingent] chat response timings", {
+        agentName: stats.agentName,
+        threadId: stats.threadId,
+        runId: stats.runId || event.runId || event.run_id,
+        terminalEvent: event.type,
+        totalDurationMs: elapsedMs(stats.startedAtMs, stats.finishedAtMs),
+        firstEventMs: elapsedMs(stats.startedAtMs, stats.firstEventAtMs),
+        runStartDelayMs: elapsedMs(stats.startedAtMs, stats.runStartedAtMs),
+        timeToFirstThinkingMs: elapsedMs(baselineMs, stats.firstThinkingAtMs),
+        timeToFirstActivityMs: elapsedMs(baselineMs, stats.firstActivityAtMs),
+        timeToFirstTextStartMs: elapsedMs(baselineMs, stats.firstTextStartAtMs),
+        timeToFirstTokenMs: elapsedMs(baselineMs, stats.firstTokenAtMs),
+        textStreamDurationMs: elapsedMs(stats.firstTokenAtMs ?? baselineMs, stats.finishedAtMs),
+        textDeltaCount: stats.textDeltaCount,
+        textCharCount: stats.textCharCount,
+        thinkingDeltaCount: stats.thinkingDeltaCount,
+        thinkingCharCount: stats.thinkingCharCount,
+        activityCount: stats.activityCount,
+        toolCallCount: stats.toolCallCount,
+      });
+      timingStatsRef.current = null;
+    };
+
     const handleActivitySnapshot = (activityEvent: any) => {
+      const stats = ensureTimingStats(activityEvent);
+      stats.activityCount += 1;
+      stats.firstActivityAtMs ??= performance.now();
+
       const messageId = activityEvent.messageId || activityEvent.message_id;
       if (messageId && activityEvent.content) {
         if (shouldThrowOnActivitySnapshot()) {
@@ -135,8 +217,28 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
         return undefined;
       },
       onEvent: ({ event }) => {
+        const stats = ensureTimingStats(event);
+        stats.firstEventAtMs ??= performance.now();
+        stats.runId = stats.runId || event.runId || event.run_id;
+
+        if (event.type === "RUN_STARTED") {
+          stats.runStartedAtMs ??= performance.now();
+        } else if (event.type === "THINKING_START") {
+          stats.firstThinkingAtMs ??= performance.now();
+        } else if (event.type === "TEXT_MESSAGE_START") {
+          stats.firstTextStartAtMs ??= performance.now();
+        } else if (event.type === "TEXT_MESSAGE_CONTENT") {
+          stats.firstTokenAtMs ??= performance.now();
+          stats.textDeltaCount += 1;
+          stats.textCharCount += getDeltaLength(event.delta);
+        } else if (event.type === "TOOL_CALL_START") {
+          stats.toolCallCount += 1;
+        }
+
         if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
           const thinkingEvent = event as ThinkingTextMessageContentEvent;
+          stats.thinkingDeltaCount += 1;
+          stats.thinkingCharCount += getDeltaLength(thinkingEvent.delta);
           appendThinkingText(thinkingEvent.delta);
         } else if (event.type === "ACTIVITY_SNAPSHOT") {
           handleActivitySnapshot(event);
@@ -146,13 +248,16 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
         } else if (event.type === "THINKING_END" || event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
           setIsThinking(false);
         }
+        if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
+          logTimingStats(event);
+        }
         return undefined;
       },
     };
 
     const subscription = agent.agent.subscribe(thinkingSubscriber as Parameters<typeof agent.agent.subscribe>[0]);
     return () => subscription.unsubscribe();
-  }, [agent.agent, appendThinkingText, clearThinkingText, setIsThinking]);
+  }, [activeThreadId, agent.agent, agentName, appendThinkingText, clearThinkingText, setIsThinking]);
 
   useEffect(() => {
     if (activeThreadId) {
