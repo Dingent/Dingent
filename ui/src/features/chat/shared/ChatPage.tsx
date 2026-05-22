@@ -24,6 +24,34 @@ interface ChatPageProps {
   slug?: string;
 }
 
+interface ChatTimingStats {
+  agentName: string;
+  threadId: string | null;
+  runId?: string;
+  startedAtMs: number;
+  firstEventAtMs?: number;
+  runStartedAtMs?: number;
+  firstThinkingAtMs?: number;
+  firstActivityAtMs?: number;
+  firstTextStartAtMs?: number;
+  firstTokenAtMs?: number;
+  finishedAtMs?: number;
+  textDeltaCount: number;
+  textCharCount: number;
+  thinkingDeltaCount: number;
+  thinkingCharCount: number;
+  activityCount: number;
+  toolCallCount: number;
+}
+
+function elapsedMs(startMs: number, endMs?: number) {
+  return typeof endMs === "number" ? Math.round((endMs - startMs) * 100) / 100 : null;
+}
+
+function getDeltaLength(delta: unknown) {
+  return typeof delta === "string" ? delta.length : 0;
+}
+
 function shouldThrowOnActivitySnapshot() {
   if (typeof window === "undefined") return false;
 
@@ -43,6 +71,7 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
   const agent = useAgent({ agentId: agentName });
   const isAgentRunning = agent.agent.isRunning;
   const messages = agent.agent.messages;
+  const timingStatsRef = useRef<ChatTimingStats | null>(null);
   const snapshotActivityMessages = messages.filter((m) => m.role === "activity");
   const [streamingActivityMessages, setStreamingActivityMessages] = useState<any[]>([]);
   const activityMessages = useMemo(() => {
@@ -105,11 +134,65 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
     setStreamingActivityMessages([]);
     clearThinkingText();
     setIsThinking(false);
+    timingStatsRef.current = null;
   }, [activeThreadId, clearThinkingText, setIsThinking]);
   useEffect(() => {
     if (!agent.agent) return;
 
+    const ensureTimingStats = (event: any, nowMs = performance.now()) => {
+      if (!timingStatsRef.current) {
+        timingStatsRef.current = {
+          agentName,
+          threadId: activeThreadId,
+          runId: event.runId || event.run_id,
+          startedAtMs: nowMs,
+          textDeltaCount: 0,
+          textCharCount: 0,
+          thinkingDeltaCount: 0,
+          thinkingCharCount: 0,
+          activityCount: 0,
+          toolCallCount: 0,
+        };
+      }
+
+      return timingStatsRef.current;
+    };
+
+    const logTimingStats = (event: any) => {
+      const stats = timingStatsRef.current;
+      if (!stats) return;
+
+      stats.finishedAtMs = performance.now();
+      const baselineMs = stats.runStartedAtMs ?? stats.startedAtMs;
+      console.info("[Dingent] chat response timings", {
+        agentName: stats.agentName,
+        threadId: stats.threadId,
+        runId: stats.runId || event.runId || event.run_id,
+        terminalEvent: event.type,
+        totalDurationMs: elapsedMs(stats.startedAtMs, stats.finishedAtMs),
+        firstEventMs: elapsedMs(stats.startedAtMs, stats.firstEventAtMs),
+        runStartDelayMs: elapsedMs(stats.startedAtMs, stats.runStartedAtMs),
+        timeToFirstThinkingMs: elapsedMs(baselineMs, stats.firstThinkingAtMs),
+        timeToFirstActivityMs: elapsedMs(baselineMs, stats.firstActivityAtMs),
+        timeToFirstTextStartMs: elapsedMs(baselineMs, stats.firstTextStartAtMs),
+        timeToFirstTokenMs: elapsedMs(baselineMs, stats.firstTokenAtMs),
+        textStreamDurationMs: elapsedMs(stats.firstTokenAtMs ?? baselineMs, stats.finishedAtMs),
+        textDeltaCount: stats.textDeltaCount,
+        textCharCount: stats.textCharCount,
+        thinkingDeltaCount: stats.thinkingDeltaCount,
+        thinkingCharCount: stats.thinkingCharCount,
+        activityCount: stats.activityCount,
+        toolCallCount: stats.toolCallCount,
+      });
+      timingStatsRef.current = null;
+    };
+
     const handleActivitySnapshot = (activityEvent: any) => {
+      const nowMs = performance.now();
+      const stats = ensureTimingStats(activityEvent, nowMs);
+      stats.activityCount += 1;
+      stats.firstActivityAtMs ??= nowMs;
+
       const messageId = activityEvent.messageId || activityEvent.message_id;
       if (messageId && activityEvent.content) {
         if (shouldThrowOnActivitySnapshot()) {
@@ -131,10 +214,9 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
       }
     };
 
-    const logFirstTokenTime = (eventType: string, delta?: string) => {
+    const logFirstTokenTime = (eventType: string, delta?: string, now = performance.now()) => {
       if (hasLoggedFirstTokenTimeRef.current || !delta) return;
 
-      const now = performance.now();
       const runStartTime = runStartTimeRef.current;
       if (runStartTime === null) return;
 
@@ -151,15 +233,43 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
         return undefined;
       },
       onEvent: ({ event }) => {
+        const nowMs = performance.now();
+        const stats = ensureTimingStats(event, nowMs);
+        stats.firstEventAtMs ??= nowMs;
+        stats.runId = stats.runId || event.runId || event.run_id;
+
         if (event.type === "RUN_STARTED") {
-          runStartTimeRef.current = performance.now();
+          stats.runStartedAtMs ??= nowMs;
+          runStartTimeRef.current = nowMs;
           hasLoggedFirstTokenTimeRef.current = false;
+        } else if (event.type === "THINKING_START") {
+          stats.firstThinkingAtMs ??= nowMs;
+        } else if (event.type === "TEXT_MESSAGE_START") {
+          stats.firstTextStartAtMs ??= nowMs;
         } else if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
           const thinkingEvent = event as ThinkingTextMessageContentEvent;
-          logFirstTokenTime(event.type, thinkingEvent.delta);
+          stats.firstThinkingAtMs ??= nowMs;
+          stats.firstTokenAtMs ??= nowMs;
+          stats.thinkingDeltaCount += 1;
+          stats.thinkingCharCount += getDeltaLength(thinkingEvent.delta);
+          logFirstTokenTime(event.type, thinkingEvent.delta, nowMs);
+        } else if (event.type === "TEXT_MESSAGE_CONTENT") {
+          stats.firstTokenAtMs ??= nowMs;
+          stats.textDeltaCount += 1;
+          stats.textCharCount += getDeltaLength(event.delta);
+        } else if (event.type === "REASONING_MESSAGE_CONTENT") {
+          stats.firstTokenAtMs ??= nowMs;
+          stats.textDeltaCount += 1;
+          stats.textCharCount += getDeltaLength(event.delta);
+        } else if (event.type === "TOOL_CALL_START") {
+          stats.toolCallCount += 1;
+        }
+
+        if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
+          const thinkingEvent = event as ThinkingTextMessageContentEvent;
           appendThinkingText(thinkingEvent.delta);
         } else if (event.type === "TEXT_MESSAGE_CONTENT" || event.type === "REASONING_MESSAGE_CONTENT") {
-          logFirstTokenTime(event.type, event.delta);
+          logFirstTokenTime(event.type, event.delta, nowMs);
         } else if (event.type === "ACTIVITY_SNAPSHOT") {
           handleActivitySnapshot(event);
         } else if (event.type === "THINKING_START") {
@@ -171,13 +281,16 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
           }
           setIsThinking(false);
         }
+        if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
+          logTimingStats(event);
+        }
         return undefined;
       },
     };
 
     const subscription = agent.agent.subscribe(thinkingSubscriber as Parameters<typeof agent.agent.subscribe>[0]);
     return () => subscription.unsubscribe();
-  }, [agent.agent, appendThinkingText, clearThinkingText, setIsThinking]);
+  }, [activeThreadId, agent.agent, agentName, appendThinkingText, clearThinkingText, setIsThinking]);
 
   useEffect(() => {
     if (activeThreadId) {

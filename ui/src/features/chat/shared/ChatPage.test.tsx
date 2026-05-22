@@ -144,8 +144,8 @@ describe("ChatPage", () => {
 
   it("logs first token time when the first output is thinking text", () => {
     const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    vi.spyOn(performance, "now").mockReturnValueOnce(100).mockReturnValueOnce(137.42);
     render(<ChatPage />);
+    vi.spyOn(performance, "now").mockReturnValueOnce(100).mockReturnValueOnce(137.42);
 
     act(() => {
       agentSubscriber?.onEvent({ event: { type: "RUN_STARTED" } });
@@ -158,6 +158,40 @@ describe("ChatPage", () => {
       elapsedMs: 37.42,
       eventType: "THINKING_TEXT_MESSAGE_CONTENT",
     });
+  });
+
+  it("logs aggregated chat response timings when a run completes", () => {
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => 100);
+    render(<ChatPage />);
+
+    act(() => {
+      agentSubscriber?.onEvent({ event: { type: "RUN_STARTED", runId: "run-1" } });
+      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", delta: "thinking" } });
+      agentSubscriber?.onEvent({ event: { type: "TEXT_MESSAGE_CONTENT", delta: "hello" } });
+      agentSubscriber?.onEvent({ event: { type: "TOOL_CALL_START" } });
+      agentSubscriber?.onEvent({ event: { type: "ACTIVITY_SNAPSHOT", messageId: "activity-live", content: { label: "live table" } } });
+      agentSubscriber?.onEvent({ event: { type: "RUN_FINISHED", runId: "run-1" } });
+    });
+
+    expect(consoleInfo).toHaveBeenCalledWith(
+      "[Dingent] chat response timings",
+      expect.objectContaining({
+        runId: "run-1",
+        terminalEvent: "RUN_FINISHED",
+        timeToFirstTokenMs: expect.any(Number),
+        totalDurationMs: expect.any(Number),
+        textDeltaCount: 1,
+        textCharCount: 5,
+        thinkingDeltaCount: 1,
+        thinkingCharCount: 8,
+        activityCount: 1,
+        toolCallCount: 1,
+      }),
+    );
+
+    consoleInfo.mockRestore();
+    performanceNow.mockRestore();
   });
 
   it("clears live thinking when switching threads", () => {
