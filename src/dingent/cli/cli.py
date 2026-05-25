@@ -22,10 +22,9 @@ from typing import Annotated
 import typer
 from alembic.config import Config as AlembicConfig
 from rich.console import Console
+from sqlalchemy import create_engine, inspect
 
 from alembic import command as alembic_command
-from dingent.core.db.session import create_db_and_tables
-from dingent.core.paths import paths
 
 if sys.platform == "win32":
     os.environ["PYTHONUTF8"] = "1"
@@ -319,6 +318,8 @@ def _get_alembic_config(database_url: str | None = None) -> AlembicConfig:
     """
     构造 Alembic 配置对象，自动处理打包后的路径问题
     """
+    from dingent.core.paths import paths
+
     # 1. 确定基准路径（处理 PyInstaller 打包后的 _MEIPASS 路径）
     if getattr(sys, "frozen", False):
         # 打包环境
@@ -361,14 +362,26 @@ def _get_alembic_config(database_url: str | None = None) -> AlembicConfig:
     return alembic_cfg
 
 
-def _run_migrations(url: str | None = None):
+def _is_new_database(database_url: str) -> bool:
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        return not inspector.get_table_names()
+    finally:
+        engine.dispose()
+
+
+def _run_migrations(url: str | None = None, stamp_only: bool = False):
     """执行数据库迁移的核心逻辑"""
     console.print("[cyan]🔄 Checking database migrations...[/cyan]")
     try:
         cfg = _get_alembic_config(url)
-        # 捕获 stdout 以防止 alembic 输出干扰 CLI 界面（可选）
-        # 这里直接调用 upgrade head
-        alembic_command.upgrade(cfg, "head")
+        if stamp_only:
+            alembic_command.stamp(cfg, "head")
+        else:
+            # 捕获 stdout 以防止 alembic 输出干扰 CLI 界面（可选）
+            # 这里直接调用 upgrade head
+            alembic_command.upgrade(cfg, "head")
         console.print("[bold green]✓ Database is up to date.[/bold green]")
     except Exception as e:
         console.print(f"[bold red]❌ Migration failed:[/bold red] {e}")
@@ -394,13 +407,17 @@ def run(
     if data_dir:
         os.environ["DINGENT_HOME"] = str(data_dir.resolve())
 
+    from dingent.core.db.session import create_db_and_tables
+    from dingent.core.paths import paths
+
+    database_url = f"sqlite:///{paths.sqlite_path}"
+    is_new_database = _is_new_database(database_url)
     create_db_and_tables()
     if not skip_migration:
-        _run_migrations()
+        _run_migrations(stamp_only=is_new_database)
 
     # 2. 导入依赖
     from dingent.cli.assets import asset_manager
-    from dingent.core.paths import paths
 
     console.print("[cyan]🔍 Checking runtime environment...[/cyan]")
 
