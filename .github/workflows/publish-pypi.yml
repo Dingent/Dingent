@@ -36,7 +36,7 @@ jobs:
       - name: Set up Python 🐍
         uses: actions/setup-python@v6
         with:
-          python-version-file: "pyproject.toml"
+          python-version: "3.13"
 
       - name: Set up Bun ⚡
         uses: oven-sh/setup-bun@v2
@@ -117,7 +117,7 @@ jobs:
       - name: Set up Python 🐍
         uses: actions/setup-python@v6
         with:
-          python-version-file: "pyproject.toml"
+          python-version: "3.13"
 
       - name: Set up Bun ⚡
         uses: oven-sh/setup-bun@v2
