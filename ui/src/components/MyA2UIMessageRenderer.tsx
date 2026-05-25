@@ -39,7 +39,7 @@ interface TableContent {
   type: "table";
   title?: string;
   columns: string[];
-  rows: Record<string, any>[];
+  rows: Array<Record<string, any> | any[]>;
 }
 interface MarkdownContent {
   type: "markdown";
@@ -53,6 +53,21 @@ type A2UIContent = TableContent | MarkdownContent;
 interface OfficialA2UIContent {
   a2ui_operations: Record<string, any>[];
   surfaceId?: string;
+}
+
+function normalizeTableContent(content: TableContent): TableContent {
+  const columns = Array.isArray(content.columns) ? content.columns.map(String) : [];
+  const rows = Array.isArray(content.rows)
+    ? content.rows.map((row) => {
+        if (Array.isArray(row)) {
+          return Object.fromEntries(columns.map((column, index) => [column, row[index]]));
+        }
+
+        return row && typeof row === "object" ? row : {};
+      })
+    : [];
+
+  return { ...content, columns, rows };
 }
 
 function ErrorFallback({
@@ -82,7 +97,8 @@ function ErrorFallback({
 }
 
 function TableView({ data }: { data: TableContent }) {
-  const { columns: rawColumns, rows, title } = data;
+  const normalizedData = useMemo(() => normalizeTableContent(data), [data]);
+  const { columns: rawColumns, rows, title } = normalizedData;
 
   const safeColumns = useMemo<ColumnDef<any>[]>(() => {
     try {
@@ -313,59 +329,71 @@ export type MessageRendererOptions = {
 export function createA2UIMessageRenderer(
   options: MessageRendererOptions,
 ): ReactActivityMessageRenderer<any> {
+  const renderContent = (content: any) => {
+    if (!content || typeof content !== "object") {
+      return (
+        <div className="p-4 border border-red-200 rounded text-red-500 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4" />
+          <span>Data format error: Content is missing or invalid.</span>
+        </div>
+      );
+    }
+
+    if (Array.isArray(content)) {
+      return (
+        <div className="space-y-2">
+          {content.map((item, index) => (
+            <div key={index}>{renderContent(item)}</div>
+          ))}
+        </div>
+      );
+    }
+
+    if (Array.isArray(content.a2ui_operations)) {
+      return (
+        <OfficialA2UISurface
+          content={content as OfficialA2UIContent}
+          theme={options.theme}
+        />
+      );
+    }
+
+    const typedContent = content as A2UIContent;
+
+    switch (typedContent.type) {
+      case "table":
+        return <TableView data={typedContent} />;
+      case "markdown":
+        return <MarkdownView data={typedContent} />;
+
+      default:
+        if ("rows" in content && "columns" in content) {
+          return <TableView data={{ ...content, type: "table" }} />;
+        }
+
+        return (
+          <div className="p-4 border border-yellow-200 bg-yellow-50 rounded text-yellow-700 text-sm">
+            <p className="font-semibold">
+              Unknown content type: {content.type}
+            </p>
+            <pre className="mt-2 text-xs opacity-80 overflow-auto max-h-40">
+              {JSON.stringify(content, null, 2)}
+            </pre>
+          </div>
+        );
+    }
+  };
+
   return {
     activityType: "a2ui-surface",
     content: z.any() as any,
 
     render: ({ content }) => {
-      if (!content || typeof content !== "object") {
-        return (
-          <div className="p-4 border border-red-200 rounded text-red-500 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4" />
-            <span>Data format error: Content is missing or invalid.</span>
-          </div>
-        );
-      }
-
       // 2. 根据 type 分发渲染逻辑
       // 使用 ErrorBoundary 包裹整个动态内容，确保任意组件崩溃不影响聊天主界面
       return (
         <ErrorBoundary FallbackComponent={ErrorFallback}>
-          {(() => {
-            if (Array.isArray(content.a2ui_operations)) {
-              return (
-                <OfficialA2UISurface
-                  content={content as OfficialA2UIContent}
-                  theme={options.theme}
-                />
-              );
-            }
-
-            const typedContent = content as A2UIContent;
-
-            switch (typedContent.type) {
-              case "table":
-                return <TableView data={typedContent} />;
-              case "markdown":
-                return <MarkdownView data={typedContent} />;
-
-              default:
-                if ("rows" in content && "columns" in content) {
-                  return <TableView data={{ ...content, type: "table" }} />;
-                }
-
-                return (
-                  <div className="p-4 border border-yellow-200 bg-yellow-50 rounded text-yellow-700 text-sm">
-                    <p className="font-semibold">
-                      Unknown content type: {content.type}
-                    </p>
-                    <pre className="mt-2 text-xs opacity-80 overflow-auto max-h-40">
-                      {JSON.stringify(content, null, 2)}
-                    </pre>
-                  </div>
-                );
-            }
-          })()}
+          {renderContent(content)}
         </ErrorBoundary>
       );
     },

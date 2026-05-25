@@ -18,7 +18,11 @@ vi.mock("react-photo-view", () => ({
 vi.mock("react-photo-view/dist/react-photo-view.css", () => ({}));
 
 vi.mock("./A2UI/data-table", () => ({
-  DataTable: ({ data }: { data: Array<Record<string, unknown>> }) => <div data-testid="legacy-table">{data.length} rows</div>,
+  DataTable: ({ data }: { data: Array<Record<string, unknown>> }) => (
+    <div data-testid="legacy-table">
+      {data.length} rows {String(data[0]?.name ?? "")}
+    </div>
+  ),
 }));
 
 describe("createA2UIMessageRenderer", () => {
@@ -41,6 +45,24 @@ describe("createA2UIMessageRenderer", () => {
     render(<Render activityType="a2ui-surface" content={{ type: "table", columns: ["name"], rows: [{ name: "Alice" }] }} message={{}} agent={{}} />);
 
     expect(screen.getByTestId("legacy-table")).toHaveTextContent("1 rows");
+  });
+
+  it("renders legacy table content wrapped in an activity content array", () => {
+    const renderer = createA2UIMessageRenderer({});
+    const Render = renderer.render;
+
+    render(<Render activityType="a2ui-surface" content={[{ type: "table", columns: ["name"], rows: [{ name: "Alice" }] }]} message={{}} agent={{}} />);
+
+    expect(screen.getByTestId("legacy-table")).toHaveTextContent("1 rows Alice");
+  });
+
+  it("normalizes legacy table rows from arrays to records", () => {
+    const renderer = createA2UIMessageRenderer({});
+    const Render = renderer.render;
+
+    render(<Render activityType="a2ui-surface" content={{ type: "table", columns: ["name"], rows: [["Alice"]] }} message={{}} agent={{}} />);
+
+    expect(screen.getByTestId("legacy-table")).toHaveTextContent("1 rows Alice");
   });
 
   it("renders markdown activity content with GFM tables", () => {
