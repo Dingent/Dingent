@@ -8,8 +8,16 @@ on:
 jobs:
   # 🐧 Linux 构建任务
   build-linux:
-    name: Build on Linux (Ubuntu 20.04 Container) 🏗️
-    runs-on: ubuntu-latest
+    name: Build on Linux ${{ matrix.arch }} (Ubuntu 20.04 Container) 🏗️
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     container:
       image: ubuntu:20.04
       env:
@@ -40,9 +48,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-linux-${{ hashFiles('**/bun.lockb') }}
+          key: bun-linux-${{ matrix.arch }}-${{ hashFiles('**/bun.lockb') }}
           restore-keys: |
-            bun-linux-
+            bun-linux-${{ matrix.arch }}-
 
       - name: Set up Just
         uses: extractions/setup-just@v3
@@ -54,6 +62,7 @@ jobs:
         run: just build-ui
 
       - name: Build a binary wheel and a source tarball
+        if: matrix.arch == 'x86_64'
         run: uv build
 
       - name: Build executable with PyInstaller 🧊
@@ -85,10 +94,11 @@ jobs:
       - name: Store the executable artifact 📦
         uses: actions/upload-artifact@v4
         with:
-          name: dingent-artifacts-linux
+          name: dingent-artifacts-linux-${{ matrix.arch }}
           path: dist_bin/
 
       - name: Store the distribution packages
+        if: matrix.arch == 'x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: python-package-distributions
