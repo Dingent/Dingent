@@ -6,18 +6,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 🐧 Linux 构建任务
-  build-linux:
-    name: Build on Linux ${{ matrix.arch }} (Ubuntu 20.04 Container) 🏗️
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+  # 🐧 Linux x86_64 构建任务
+  build-linux-x86_64:
+    name: Build on Linux x86_64 (Ubuntu 20.04 Container) 🏗️
+    runs-on: ubuntu-latest
     container:
       image: ubuntu:20.04
       env:
@@ -48,9 +40,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-linux-${{ matrix.arch }}-${{ hashFiles('**/bun.lockb') }}
+          key: bun-linux-x86_64-${{ hashFiles('**/bun.lockb') }}
           restore-keys: |
-            bun-linux-${{ matrix.arch }}-
+            bun-linux-x86_64-
 
       - name: Set up Just
         uses: extractions/setup-just@v3
@@ -62,7 +54,6 @@ jobs:
         run: just build-ui
 
       - name: Build a binary wheel and a source tarball
-        if: matrix.arch == 'x86_64'
         run: uv build
 
       - name: Build executable with PyInstaller 🧊
@@ -94,15 +85,89 @@ jobs:
       - name: Store the executable artifact 📦
         uses: actions/upload-artifact@v4
         with:
-          name: dingent-artifacts-linux-${{ matrix.arch }}
+          name: dingent-artifacts-linux-x86_64
           path: dist_bin/
 
       - name: Store the distribution packages
-        if: matrix.arch == 'x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: python-package-distributions
           path: dist/
+
+  # 🐧 Linux arm64 构建任务
+  build-linux-arm64:
+    name: Build on Linux arm64 🏗️
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git unzip build-essential libffi-dev
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python 🐍
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up Bun ⚡
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-linux-arm64-${{ hashFiles('**/bun.lockb') }}
+          restore-keys: |
+            bun-linux-arm64-
+
+      - name: Set up Just
+        uses: extractions/setup-just@v3
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Build UI
+        run: just build-ui
+
+      - name: Build executable with PyInstaller 🧊
+        run: uv run pyinstaller --clean dingent.spec --distpath dist_bin
+
+      # ✅ 新增：处理 Linux 产物（重命名文件夹并打包）
+      - name: Compress OneFolder package 📦
+        run: |
+          cd dist_bin
+          # 1. 找到以 _dir 结尾的目录名 (例如 dingent-linux-aarch64_dir)
+          DIR_NAME=$(ls -d *_dir)
+          # 2. 提取基础名称 (例如 dingent-linux-aarch64)
+          BASE_NAME=$(basename "$DIR_NAME" _dir)
+
+          # 3. 将文件夹重命名为简洁的 'dingent'，这样用户解压后看到的是干净的文件夹名
+          #    注意：这里不会和同级目录下的单文件 dingent-linux-aarch64 冲突
+          mv "$DIR_NAME" dingent
+
+          # 4. 打包成 tar.gz
+          tar -czvf "${BASE_NAME}.tar.gz" dingent
+
+          # 5. 删除未压缩的原始目录，这样 upload-artifact 就只上传 exe 和 tar.gz
+          rm -rf dingent
+
+          # 打印一下结果，方便调试
+          echo "Build artifacts ready:"
+          ls -lh
+
+      - name: Store the executable artifact 📦
+        uses: actions/upload-artifact@v4
+        with:
+          name: dingent-artifacts-linux-arm64
+          path: dist_bin/
 
   # 🪟 Windows 构建任务
   build-windows:
@@ -176,7 +241,7 @@ jobs:
 
   publish-to-github-release:
     name: Upload Assets to GitHub Release 🐙
-    needs: [build-linux, build-windows]
+    needs: [build-linux-x86_64, build-linux-arm64, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -201,7 +266,7 @@ jobs:
   publish-to-pypi:
     name: Publish Python 🐍 distribution 📦 to PyPI
     if: github.event_name == 'release' && !github.event.release.prerelease
-    needs: [build-linux]
+    needs: [build-linux-x86_64]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -220,7 +285,7 @@ jobs:
 
   publish-to-testpypi:
     name: Publish Python 🐍 distribution 📦 to TestPyPI
-    needs: [build-linux]
+    needs: [build-linux-x86_64]
     runs-on: ubuntu-latest
     environment:
       name: testpypi
