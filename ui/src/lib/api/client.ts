@@ -11,9 +11,9 @@ let clientInstance: ApiClient | null = null;
 let cachedToken: string | null = null;
 let cachedVisitorId: string | null = null;
 
-export function getClientApi() {
+export function getClientApi(accessToken?: string | null) {
   const state = useAuthStore.getState();
-  const token = state.accessToken || Cookies.get("access_token") || null;
+  const token = accessToken || state.accessToken || Cookies.get("access_token") || null;
   let visitorId = state.visitorId || Cookies.get("visitor_id") || null;
 
   if (!token && !visitorId) {

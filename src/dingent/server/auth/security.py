@@ -7,11 +7,11 @@ from pwdlib import PasswordHash
 from sqlmodel import Session
 from starlette import status
 
-from dingent.core.db.crud.user import get_user
+from dingent.core.config import settings
+from dingent.core.db.crud.user import get_user_by_id
 
-SECRET_KEY = "YOUR_SUPER_SECRET_KEY_CHANGE_THIS"  # 强烈建议从环境变量读取
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 3600  # Token 有效期为 3600 分钟
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
 password_hash = PasswordHash.recommended()
 # --- 密码相关函数 ---
@@ -22,8 +22,10 @@ def get_password_hash(password: str) -> str:
     return password_hash.hash(password)
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
+def verify_password(plain_password: str, hashed_password: str | None) -> bool:
     """验证明文密码和哈希密码是否匹配"""
+    if not hashed_password:
+        return False
     return password_hash.verify(plain_password, hashed_password)
 
 
@@ -45,7 +47,7 @@ def create_access_token(data: dict[str, Any], expires_delta: timedelta | None = 
         expire = datetime.now(UTC) + timedelta(minutes=15)
 
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 
@@ -57,7 +59,7 @@ def decode_token(token: str) -> dict[str, Any] | None:
     :return: 如果 Token 有效，则返回 payload；否则返回 None。
     """
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
         return payload
     except JWTError:
         return None
@@ -75,11 +77,11 @@ def get_current_user_from_token(session: Session, token: str):
     if payload is None:
         raise credentials_exception
 
-    email: str | None = payload.get("sub")  # no default; be strict
-    if not email:
+    user_id: str | None = payload.get("sub")  # no default; be strict
+    if not user_id:
         raise credentials_exception
 
-    user = get_user(session, email)
+    user = get_user_by_id(session, user_id)
     if user is None:
         raise credentials_exception
     return user

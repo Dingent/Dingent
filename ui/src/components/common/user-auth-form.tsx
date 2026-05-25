@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as z from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { ApiClient } from "@/services";
 import { useAuthStore } from "@/store";
+import type { AuthConfigResponse } from "@/types/entity";
 import {
   Form,
   FormControl,
@@ -44,7 +45,12 @@ export function UserAuthForm({
   ...props
 }: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false);
+  const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
   const { setAuth } = useAuthStore();
+
+  useEffect(() => {
+    api.auth.getConfig().then(setAuthConfig).catch(() => setAuthConfig(null));
+  }, [api]);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -85,6 +91,17 @@ export function UserAuthForm({
         return err.message || "登录过程中发生错误";
       },
     });
+  }
+
+  function handleSsoLogin() {
+    const loginUrl = authConfig?.sso_login_url;
+    if (!loginUrl) {
+      return;
+    }
+
+    const currentPath = `${window.location.pathname}${window.location.search}`;
+    const returnTo = currentPath.replace(/^\/dingent\/web/, "") || "/";
+    window.location.href = `${api.http.defaults.baseURL}${loginUrl}?next=${encodeURIComponent(returnTo)}`;
   }
 
   return (
@@ -140,7 +157,7 @@ export function UserAuthForm({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
+        <div className={authConfig?.sso_enabled ? "grid grid-cols-2 gap-2" : "grid gap-2"}>
           <Link href="/auth/sign-up">
             <Button
               variant="outline"
@@ -151,9 +168,11 @@ export function UserAuthForm({
               Sign up
             </Button>
           </Link>
-          <Button variant="outline" type="button" disabled={isLoading}>
-            SSO
-          </Button>
+          {authConfig?.sso_enabled && (
+            <Button variant="outline" type="button" disabled={isLoading} onClick={handleSsoLogin}>
+              {authConfig.sso_label || "SSO"}
+            </Button>
+          )}
         </div>
       </form>
     </Form>

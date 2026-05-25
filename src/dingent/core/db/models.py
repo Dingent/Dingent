@@ -66,7 +66,7 @@ class User(SQLModel, table=True):
     username: str = Field(description="用户昵称，非唯一标识")
     email: str = Field(unique=True, index=True, description="用户邮箱（主要用于登录和通知）")
     roles: list[Role] = Relationship(back_populates="users", link_model=UserRoleLink)
-    hashed_password: str
+    hashed_password: str | None = None
     encrypted_dek: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
 
     # 用户状态
@@ -86,6 +86,28 @@ class User(SQLModel, table=True):
     # 关系
     resources: list["Resource"] = Relationship(back_populates="created_by", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
     workspaces: list["Workspace"] = Relationship(back_populates="members", link_model=WorkspaceMember)
+    identities: list["UserIdentity"] = Relationship(back_populates="user", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
+
+
+class UserIdentity(SQLModel, table=True):
+    """
+    External login identity bound to a Dingent user.
+    """
+
+    __table_args__ = (UniqueConstraint("provider", "provider_subject", name="unique_provider_subject"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    user_id: UUID = Field(foreign_key="user.id", index=True)
+    provider: str = Field(index=True, description="External auth provider name, for example 'cas'.")
+    provider_subject: str = Field(index=True, description="Stable user identifier returned by the external provider.")
+    email: str | None = Field(default=None, index=True)
+    username: str | None = None
+    display_name: str | None = None
+    raw_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(MutableDict.as_mutable(JSON)))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    user: User = Relationship(back_populates="identities")
 
 
 class Workspace(SQLModel, table=True):

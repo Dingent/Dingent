@@ -1,4 +1,4 @@
-import { LoginRequest, LoginResponse, SignupRequest } from "@/types/entity";
+import { AuthConfigResponse, LoginRequest, LoginResponse, SignupRequest } from "@/types/entity";
 import type { AxiosInstance } from "axios";
 
 export class AuthApi {
@@ -18,8 +18,13 @@ export class AuthApi {
     return data;
   }
 
+  async getConfig(): Promise<AuthConfigResponse> {
+    const { data } = await this.http.get<AuthConfigResponse>("/auth/config");
+    return data;
+  }
+
   async getMe() {
-    const { data } = await this.http.get("/users/me");
+    const { data } = await this.http.get("/auth/me");
     return data;
   }
 }

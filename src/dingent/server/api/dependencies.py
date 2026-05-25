@@ -277,4 +277,6 @@ def authenticate_user(form_data: OAuth2PasswordRequestForm = Depends(), session:
         id=user.id,
         email=user.email,
         username=user.username,
+        full_name=user.full_name,
+        role=[role.name for role in user.roles] or ["user"],
     )

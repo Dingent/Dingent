@@ -261,6 +261,12 @@ export interface LoginResponse {
   token_type?: string;
   user?: any;
 }
+export interface AuthConfigResponse {
+  password_login_enabled: boolean;
+  sso_enabled: boolean;
+  sso_label: string;
+  sso_login_url?: string | null;
+}
 export type AuthUser = {
   /** Id */
   id: string;
