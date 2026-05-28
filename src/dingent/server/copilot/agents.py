@@ -100,6 +100,27 @@ def ding_resolve_reasoning_content(chunk: AIMessageChunk | AIMessage) -> LangGra
     return None
 
 
+def ding_strip_reasoning_metadata(chunk: AIMessageChunk | AIMessage) -> AIMessageChunk | AIMessage:
+    reasoning_keys = {"reasoning_content", "reasoning", "thinking"}
+    additional_kwargs = getattr(chunk, "additional_kwargs", None)
+    if not isinstance(additional_kwargs, dict) or not any(key in additional_kwargs for key in reasoning_keys):
+        return chunk
+
+    return chunk.model_copy(update={"additional_kwargs": {key: value for key, value in additional_kwargs.items() if key not in reasoning_keys}})
+
+
+def ding_strip_event_reasoning_metadata(event: Any) -> Any:
+    chunk = event.get("data", {}).get("chunk")
+    if not isinstance(chunk, AIMessageChunk | AIMessage):
+        return event
+
+    stripped_chunk = ding_strip_reasoning_metadata(chunk)
+    if stripped_chunk is chunk:
+        return event
+
+    return {**event, "data": {**event.get("data", {}), "chunk": stripped_chunk}}
+
+
 def ding_langchain_messages_to_agui(messages: list[BaseMessage]):
     agui_messages: list[AGUIMessage] = []
     thinking_content = ""
@@ -629,8 +650,6 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
             )
 
     async def _handle_single_event(self, event: Any, state) -> AsyncGenerator[str]:
-        # 1. 尝试提取 reasoning_data，用于判断是否命中需要修复的逻辑分支
-        # 注意：你需要确保引入了 resolve_reasoning_content 和 LangGraphEventTypes
         event_type = event.get("event")
         chunk = event.get("data", {}).get("chunk")
 
@@ -642,15 +661,14 @@ class DingLangGraphAGUIAgent(LangGraphAGUIAgent):
             for evt in self._emit_thinking_events(reasoning_data):
                 yield evt
 
-            return
-
         command_tool_events = [evt async for evt in self._handle_command_tool_end_event(event)]
         if command_tool_events:
             for evt in command_tool_events:
                 yield evt
             return
 
-        async for evt in super()._handle_single_event(event, state):
+        event_for_text_stream = ding_strip_event_reasoning_metadata(event) if reasoning_data else event
+        async for evt in super()._handle_single_event(event_for_text_stream, state):
             yield evt
 
         for evt in self._emit_tool_output_activity_snapshot_events(event):

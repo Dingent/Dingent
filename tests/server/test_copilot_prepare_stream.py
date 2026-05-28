@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from ag_ui.core import EventType, RunAgentInput
 from ag_ui_langgraph.agent import ToolCallResultEvent
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from dingent.server.copilot.agents import DingLangGraphAGUIAgent
 
@@ -109,3 +109,23 @@ async def test_handle_single_event_emits_activity_from_current_state():
     assert len(activity_events) == 1
     assert activity_events[0].message_id == "activity_1"
     assert activity_events[0].content == {"type": "markdown", "content": "### Live result"}
+
+
+@pytest.mark.asyncio
+async def test_handle_single_event_keeps_text_content_when_chunk_has_reasoning():
+    graph = MagicMock()
+    agent = DingLangGraphAGUIAgent(name="test", graph=graph)
+    agent.active_run = {
+        "id": "run_1",
+        "mode": "start",
+        "has_function_streaming": False,
+        "model_made_tool_call": False,
+        "state_reliable": True,
+    }
+    chunk = AIMessageChunk(id="message_1", content="answer", additional_kwargs={"reasoning_content": "thinking"})
+    event = {"event": "on_chat_model_stream", "data": {"chunk": chunk}}
+
+    events = cast(list[Any], [event async for event in agent._handle_single_event(event, {})])
+
+    assert any(event.type == EventType.THINKING_TEXT_MESSAGE_CONTENT and event.delta == "thinking" for event in events)
+    assert any(event.type == EventType.TEXT_MESSAGE_CONTENT and event.delta == "answer" for event in events)

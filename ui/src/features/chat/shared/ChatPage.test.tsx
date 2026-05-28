@@ -142,22 +142,26 @@ describe("ChatPage", () => {
     expect(screen.getByText("checking tools")).toBeInTheDocument();
   });
 
-  it("logs first token time when the first output is thinking text", () => {
+  it("logs first text token time separately from thinking text", () => {
     const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const performanceNow = vi.spyOn(performance, "now").mockReturnValue(0);
     render(<ChatPage />);
-    vi.spyOn(performance, "now").mockReturnValueOnce(100).mockReturnValueOnce(137.42);
 
     act(() => {
+      performanceNow.mockReturnValue(100);
       agentSubscriber?.onEvent({ event: { type: "RUN_STARTED" } });
+      performanceNow.mockReturnValue(137.42);
       agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", delta: "checking tools" } });
+      performanceNow.mockReturnValue(180.42);
       agentSubscriber?.onEvent({ event: { type: "TEXT_MESSAGE_CONTENT", delta: "final answer" } });
     });
 
     expect(consoleLog).toHaveBeenCalledTimes(1);
-    expect(consoleLog).toHaveBeenCalledWith("[Dingent] First token time", {
-      elapsedMs: 37.42,
-      eventType: "THINKING_TEXT_MESSAGE_CONTENT",
+    expect(consoleLog).toHaveBeenCalledWith("[Dingent] first text token timing", {
+      elapsedMs: 80.42,
+      eventType: "TEXT_MESSAGE_CONTENT",
     });
+    performanceNow.mockRestore();
   });
 
   it("logs aggregated chat response timings when a run completes", () => {
@@ -179,12 +183,17 @@ describe("ChatPage", () => {
       expect.objectContaining({
         runId: "run-1",
         terminalEvent: "RUN_FINISHED",
-        timeToFirstTokenMs: expect.any(Number),
-        totalDurationMs: expect.any(Number),
+        frontendObservedDurationMs: expect.any(Number),
+        timeToFirstThinkingTokenMs: expect.any(Number),
+        timeToFirstTextTokenMs: expect.any(Number),
+        timeToFirstVisibleOutputMs: expect.any(Number),
+        textStreamDurationMs: expect.any(Number),
         textDeltaCount: 1,
         textCharCount: 5,
         thinkingDeltaCount: 1,
         thinkingCharCount: 8,
+        reasoningDeltaCount: 0,
+        reasoningCharCount: 0,
         activityCount: 1,
         toolCallCount: 1,
       }),
