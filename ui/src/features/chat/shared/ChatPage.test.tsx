@@ -203,6 +203,39 @@ describe("ChatPage", () => {
     performanceNow.mockRestore();
   });
 
+  it("starts a fresh timing window for each run started event", () => {
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const performanceNow = vi.spyOn(performance, "now").mockReturnValue(0);
+    render(<ChatPage />);
+
+    act(() => {
+      performanceNow.mockReturnValue(100);
+      agentSubscriber?.onEvent({ event: { type: "TEXT_MESSAGE_CONTENT", runId: "old-run", delta: "stale" } });
+      performanceNow.mockReturnValue(1_000);
+      agentSubscriber?.onEvent({ event: { type: "RUN_STARTED", runId: "new-run" } });
+      performanceNow.mockReturnValue(1_250);
+      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", runId: "old-run", delta: "old thought" } });
+      performanceNow.mockReturnValue(1_500);
+      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", runId: "new-run", delta: "thinking" } });
+      performanceNow.mockReturnValue(2_000);
+      agentSubscriber?.onEvent({ event: { type: "RUN_FINISHED", runId: "new-run" } });
+    });
+
+    expect(consoleInfo).toHaveBeenCalledWith(
+      "[Dingent] chat response timings",
+      expect.objectContaining({
+        runId: "new-run",
+        frontendObservedDurationMs: 1_000,
+        timeToFirstThinkingTokenMs: 500,
+        thinkingDeltaCount: 1,
+        thinkingCharCount: 8,
+      }),
+    );
+
+    consoleInfo.mockRestore();
+    performanceNow.mockRestore();
+  });
+
   it("clears live thinking when switching threads", () => {
     const { rerender } = render(<ChatPage />);
 

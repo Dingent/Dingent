@@ -58,6 +58,10 @@ function getDeltaLength(delta: unknown) {
   return typeof delta === "string" ? delta.length : 0;
 }
 
+function getEventRunId(event: any) {
+  return event.runId || event.run_id;
+}
+
 function shouldThrowOnActivitySnapshot() {
   if (typeof window === "undefined") return false;
 
@@ -143,22 +147,37 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
   useEffect(() => {
     if (!agent.agent) return;
 
+    const createTimingStats = (event: any, nowMs = performance.now()): ChatTimingStats => ({
+      agentName,
+      threadId: activeThreadId,
+      runId: getEventRunId(event),
+      observedStartedAtMs: nowMs,
+      firstEventAtMs: event.type === "RUN_STARTED" ? nowMs : undefined,
+      runStartedAtMs: event.type === "RUN_STARTED" ? nowMs : undefined,
+      textDeltaCount: 0,
+      textCharCount: 0,
+      thinkingDeltaCount: 0,
+      thinkingCharCount: 0,
+      reasoningDeltaCount: 0,
+      reasoningCharCount: 0,
+      activityCount: 0,
+      toolCallCount: 0,
+    });
+
     const ensureTimingStats = (event: any, nowMs = performance.now()) => {
+      const eventRunId = getEventRunId(event);
+
+      if (event.type === "RUN_STARTED") {
+        timingStatsRef.current = createTimingStats(event, nowMs);
+        return timingStatsRef.current;
+      }
+
       if (!timingStatsRef.current) {
-        timingStatsRef.current = {
-          agentName,
-          threadId: activeThreadId,
-          runId: event.runId || event.run_id,
-          observedStartedAtMs: nowMs,
-          textDeltaCount: 0,
-          textCharCount: 0,
-          thinkingDeltaCount: 0,
-          thinkingCharCount: 0,
-          reasoningDeltaCount: 0,
-          reasoningCharCount: 0,
-          activityCount: 0,
-          toolCallCount: 0,
-        };
+        timingStatsRef.current = createTimingStats(event, nowMs);
+      } else if (timingStatsRef.current.runId && eventRunId && timingStatsRef.current.runId !== eventRunId) {
+        return null;
+      } else if (!timingStatsRef.current.runId && eventRunId) {
+        timingStatsRef.current.runId = eventRunId;
       }
 
       return timingStatsRef.current;
@@ -201,6 +220,7 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
     const handleActivitySnapshot = (activityEvent: any) => {
       const nowMs = performance.now();
       const stats = ensureTimingStats(activityEvent, nowMs);
+      if (!stats) return;
       stats.activityCount += 1;
       stats.firstActivityAtMs ??= nowMs;
       stats.firstVisibleOutputAtMs ??= nowMs;
@@ -244,8 +264,9 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
       onEvent: ({ event }) => {
         const nowMs = performance.now();
         const stats = ensureTimingStats(event, nowMs);
+        if (!stats) return undefined;
         stats.firstEventAtMs ??= nowMs;
-        stats.runId = stats.runId || event.runId || event.run_id;
+        stats.runId = stats.runId || getEventRunId(event);
 
         if (event.type === "RUN_STARTED") {
           stats.runStartedAtMs ??= nowMs;
