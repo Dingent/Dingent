@@ -166,6 +166,7 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
 
     const ensureTimingStats = (event: any, nowMs = performance.now()) => {
       const eventRunId = getEventRunId(event);
+      const isTerminalEvent = event.type === "RUN_FINISHED" || event.type === "RUN_ERROR";
 
       if (event.type === "RUN_STARTED") {
         timingStatsRef.current = createTimingStats(event, nowMs);
@@ -174,9 +175,9 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
 
       if (!timingStatsRef.current) {
         timingStatsRef.current = createTimingStats(event, nowMs);
-      } else if (timingStatsRef.current.runId && eventRunId && timingStatsRef.current.runId !== eventRunId) {
+      } else if (timingStatsRef.current.runId && eventRunId && timingStatsRef.current.runId !== eventRunId && !isTerminalEvent) {
         return null;
-      } else if (!timingStatsRef.current.runId && eventRunId) {
+      } else if (!timingStatsRef.current.runId && event.type === "RUN_FINISHED" && eventRunId) {
         timingStatsRef.current.runId = eventRunId;
       }
 
@@ -246,16 +247,6 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
       }
     };
 
-    const logFirstTextTokenTime = (stats: ChatTimingStats, eventType: string, delta?: string, now = performance.now()) => {
-      if (!delta || stats.firstTextTokenAtMs !== now) return;
-
-      const baselineMs = stats.runStartedAtMs ?? stats.observedStartedAtMs;
-      console.log("[Dingent] first text token timing", {
-        elapsedMs: elapsedMs(baselineMs, now),
-        eventType,
-      });
-    };
-
     const thinkingSubscriber = {
       onActivitySnapshotEvent: ({ event }: { event: any }) => {
         handleActivitySnapshot(event);
@@ -266,7 +257,9 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
         const stats = ensureTimingStats(event, nowMs);
         if (!stats) return undefined;
         stats.firstEventAtMs ??= nowMs;
-        stats.runId = stats.runId || getEventRunId(event);
+        if (event.type === "RUN_STARTED" || event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
+          stats.runId = stats.runId || getEventRunId(event);
+        }
 
         if (event.type === "RUN_STARTED") {
           stats.runStartedAtMs ??= nowMs;
@@ -287,7 +280,6 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
           stats.thinkingCharCount += deltaLength;
         } else if (event.type === "TEXT_MESSAGE_CONTENT") {
           const deltaLength = getDeltaLength(event.delta);
-          const isFirstTextToken = deltaLength > 0 && !stats.firstTextTokenAtMs;
           if (deltaLength > 0) {
             stats.firstTextTokenAtMs ??= nowMs;
             stats.lastTextTokenAtMs = nowMs;
@@ -295,7 +287,6 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
           }
           stats.textDeltaCount += 1;
           stats.textCharCount += deltaLength;
-          if (isFirstTextToken) logFirstTextTokenTime(stats, event.type, event.delta, nowMs);
         } else if (event.type === "REASONING_MESSAGE_CONTENT") {
           const deltaLength = getDeltaLength(event.delta);
           if (deltaLength > 0) stats.firstVisibleOutputAtMs ??= nowMs;
