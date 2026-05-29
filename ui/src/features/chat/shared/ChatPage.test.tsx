@@ -192,9 +192,9 @@ describe("ChatPage", () => {
       performanceNow.mockReturnValue(1_000);
       agentSubscriber?.onEvent({ event: { type: "RUN_STARTED", runId: "new-run" } });
       performanceNow.mockReturnValue(1_250);
-      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", runId: "old-run", delta: "old thought" } });
+      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", runId: "old-run", delta: "thinking" } });
       performanceNow.mockReturnValue(1_500);
-      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", runId: "new-run", delta: "thinking" } });
+      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", runId: "new-run", delta: " later" } });
       performanceNow.mockReturnValue(2_000);
       agentSubscriber?.onEvent({ event: { type: "RUN_FINISHED", runId: "new-run" } });
     });
@@ -204,9 +204,9 @@ describe("ChatPage", () => {
       expect.objectContaining({
         runId: "new-run",
         frontendObservedDurationMs: 1_000,
-        timeToFirstThinkingTokenMs: 500,
-        thinkingDeltaCount: 1,
-        thinkingCharCount: 8,
+        timeToFirstThinkingTokenMs: 250,
+        thinkingDeltaCount: 2,
+        thinkingCharCount: 14,
       }),
     );
 
@@ -214,7 +214,7 @@ describe("ChatPage", () => {
     performanceNow.mockRestore();
   });
 
-  it("logs aggregated timings even when the terminal event has a different run id", () => {
+  it("keeps first token times fixed after later content events", () => {
     const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const performanceNow = vi.spyOn(performance, "now").mockReturnValue(0);
@@ -224,8 +224,14 @@ describe("ChatPage", () => {
       performanceNow.mockReturnValue(1_000);
       agentSubscriber?.onEvent({ event: { type: "RUN_STARTED", runId: "started-run" } });
       performanceNow.mockReturnValue(1_200);
+      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", delta: "think" } });
+      performanceNow.mockReturnValue(1_400);
+      agentSubscriber?.onEvent({ event: { type: "THINKING_TEXT_MESSAGE_CONTENT", delta: " later" } });
+      performanceNow.mockReturnValue(1_600);
       agentSubscriber?.onEvent({ event: { type: "TEXT_MESSAGE_CONTENT", delta: "hello" } });
-      performanceNow.mockReturnValue(1_500);
+      performanceNow.mockReturnValue(1_900);
+      agentSubscriber?.onEvent({ event: { type: "TEXT_MESSAGE_CONTENT", delta: " world" } });
+      performanceNow.mockReturnValue(2_100);
       agentSubscriber?.onEvent({ event: { type: "RUN_FINISHED", runId: "terminal-run" } });
     });
 
@@ -233,9 +239,14 @@ describe("ChatPage", () => {
       "[Dingent] chat response timings",
       expect.objectContaining({
         runId: "started-run",
-        timeToFirstTextTokenMs: 200,
-        textDeltaCount: 1,
-        textCharCount: 5,
+        timeToFirstThinkingStartMs: 200,
+        timeToFirstThinkingTokenMs: 200,
+        timeToFirstTextStartMs: 600,
+        timeToFirstTextTokenMs: 600,
+        thinkingDeltaCount: 2,
+        thinkingCharCount: 11,
+        textDeltaCount: 2,
+        textCharCount: 11,
       }),
     );
     expect(consoleLog).not.toHaveBeenCalledWith("[Dingent] first text token timing", expect.anything());

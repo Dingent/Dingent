@@ -58,10 +58,6 @@ function getDeltaLength(delta: unknown) {
   return typeof delta === "string" ? delta.length : 0;
 }
 
-function getEventRunId(event: any) {
-  return event.runId || event.run_id;
-}
-
 function shouldThrowOnActivitySnapshot() {
   if (typeof window === "undefined") return false;
 
@@ -150,7 +146,7 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
     const createTimingStats = (event: any, nowMs = performance.now()): ChatTimingStats => ({
       agentName,
       threadId: activeThreadId,
-      runId: getEventRunId(event),
+      runId: event.runId || event.run_id,
       observedStartedAtMs: nowMs,
       firstEventAtMs: event.type === "RUN_STARTED" ? nowMs : undefined,
       runStartedAtMs: event.type === "RUN_STARTED" ? nowMs : undefined,
@@ -165,20 +161,9 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
     });
 
     const ensureTimingStats = (event: any, nowMs = performance.now()) => {
-      const eventRunId = getEventRunId(event);
-      const isTerminalEvent = event.type === "RUN_FINISHED" || event.type === "RUN_ERROR";
-
       if (event.type === "RUN_STARTED") {
         timingStatsRef.current = createTimingStats(event, nowMs);
         return timingStatsRef.current;
-      }
-
-      if (!timingStatsRef.current) {
-        timingStatsRef.current = createTimingStats(event, nowMs);
-      } else if (timingStatsRef.current.runId && eventRunId && timingStatsRef.current.runId !== eventRunId && !isTerminalEvent) {
-        return null;
-      } else if (!timingStatsRef.current.runId && event.type === "RUN_FINISHED" && eventRunId) {
-        timingStatsRef.current.runId = eventRunId;
       }
 
       return timingStatsRef.current;
@@ -221,10 +206,11 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
     const handleActivitySnapshot = (activityEvent: any) => {
       const nowMs = performance.now();
       const stats = ensureTimingStats(activityEvent, nowMs);
-      if (!stats) return;
-      stats.activityCount += 1;
-      stats.firstActivityAtMs ??= nowMs;
-      stats.firstVisibleOutputAtMs ??= nowMs;
+      if (stats) {
+        stats.activityCount += 1;
+        stats.firstActivityAtMs ??= nowMs;
+        stats.firstVisibleOutputAtMs ??= nowMs;
+      }
 
       const messageId = activityEvent.messageId || activityEvent.message_id;
       if (messageId && activityEvent.content) {
@@ -255,45 +241,40 @@ function ChatPageContent({ isGuest, visitorId, slug }: ChatPageProps) {
       onEvent: ({ event }) => {
         const nowMs = performance.now();
         const stats = ensureTimingStats(event, nowMs);
-        if (!stats) return undefined;
-        stats.firstEventAtMs ??= nowMs;
-        if (event.type === "RUN_STARTED" || event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
-          stats.runId = stats.runId || getEventRunId(event);
-        }
+        if (stats) {
+          stats.firstEventAtMs ??= nowMs;
 
-        if (event.type === "RUN_STARTED") {
-          stats.runStartedAtMs ??= nowMs;
-        } else if (event.type === "THINKING_START") {
-          stats.firstThinkingStartAtMs ??= nowMs;
-        } else if (event.type === "TEXT_MESSAGE_START") {
-          stats.firstTextStartAtMs ??= nowMs;
-        } else if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
-          const thinkingEvent = event as ThinkingTextMessageContentEvent;
-          const deltaLength = getDeltaLength(thinkingEvent.delta);
-          if (deltaLength > 0) {
-            stats.firstThinkingStartAtMs ??= nowMs;
-            stats.firstThinkingTokenAtMs ??= nowMs;
-            stats.lastThinkingTokenAtMs = nowMs;
-            stats.firstVisibleOutputAtMs ??= nowMs;
+          if (event.type === "RUN_STARTED") {
+            stats.runStartedAtMs ??= nowMs;
+          } else if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
+            const thinkingEvent = event as ThinkingTextMessageContentEvent;
+            const deltaLength = getDeltaLength(thinkingEvent.delta);
+            if (deltaLength > 0) {
+              stats.firstThinkingStartAtMs ??= nowMs;
+              stats.firstThinkingTokenAtMs ??= nowMs;
+              stats.lastThinkingTokenAtMs = nowMs;
+              stats.firstVisibleOutputAtMs ??= nowMs;
+            }
+            stats.thinkingDeltaCount += 1;
+            stats.thinkingCharCount += deltaLength;
+          } else if (event.type === "TEXT_MESSAGE_CONTENT") {
+            const deltaLength = getDeltaLength(event.delta);
+            if (deltaLength > 0) {
+              stats.firstTextStartAtMs ??= nowMs;
+              stats.firstTextTokenAtMs ??= nowMs;
+              stats.lastTextTokenAtMs = nowMs;
+              stats.firstVisibleOutputAtMs ??= nowMs;
+            }
+            stats.textDeltaCount += 1;
+            stats.textCharCount += deltaLength;
+          } else if (event.type === "REASONING_MESSAGE_CONTENT") {
+            const deltaLength = getDeltaLength(event.delta);
+            if (deltaLength > 0) stats.firstVisibleOutputAtMs ??= nowMs;
+            stats.reasoningDeltaCount += 1;
+            stats.reasoningCharCount += deltaLength;
+          } else if (event.type === "TOOL_CALL_START") {
+            stats.toolCallCount += 1;
           }
-          stats.thinkingDeltaCount += 1;
-          stats.thinkingCharCount += deltaLength;
-        } else if (event.type === "TEXT_MESSAGE_CONTENT") {
-          const deltaLength = getDeltaLength(event.delta);
-          if (deltaLength > 0) {
-            stats.firstTextTokenAtMs ??= nowMs;
-            stats.lastTextTokenAtMs = nowMs;
-            stats.firstVisibleOutputAtMs ??= nowMs;
-          }
-          stats.textDeltaCount += 1;
-          stats.textCharCount += deltaLength;
-        } else if (event.type === "REASONING_MESSAGE_CONTENT") {
-          const deltaLength = getDeltaLength(event.delta);
-          if (deltaLength > 0) stats.firstVisibleOutputAtMs ??= nowMs;
-          stats.reasoningDeltaCount += 1;
-          stats.reasoningCharCount += deltaLength;
-        } else if (event.type === "TOOL_CALL_START") {
-          stats.toolCallCount += 1;
         }
 
         if (event.type === "THINKING_TEXT_MESSAGE_CONTENT") {
