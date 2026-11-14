@@ -39,7 +39,7 @@ def archive(snapshot: Path, output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(data, indent=2) + "\n")
     with (output / "clones.csv").open("w", newline="") as handle:
-        writer = csv.writer(handle)
+        writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(["date", "count", "uniques"])
         writer.writerows((row["timestamp"][:10], row["count"], row["uniques"]) for row in rows)
     label = f"{total:,}"
