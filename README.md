@@ -1,5 +1,9 @@
 # Dingent
 
+[![Archived clones](https://raw.githubusercontent.com/Dingent/Dingent/traffic/clones.svg)](https://github.com/Dingent/Dingent/tree/traffic)
+
+Clone counts are archived daily; see [setup and coverage](docs/clone-traffic.md).
+
 Dingent is a cross-platform AI agent framework. It combines a Python backend, a Next.js frontend, workspace-based collaboration, assistant/workflow management, plugin execution, and chat runtime APIs into one deployable application.
 
 The project is under active development. The current codebase is centered around the bundled FastAPI service and the `ui/` Next.js application.

@@ -1,0 +1,64 @@
+name: Archive clone traffic
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clone-traffic
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    if: github.repository == 'Dingent/Dingent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+
+      - name: Fetch daily clone traffic
+        env:
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::error::Add the TRAFFIC_TOKEN repository secret (fine-grained PAT: Administration read for Dingent/Dingent).'
+            exit 1
+          fi
+          gh api --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            repos/Dingent/Dingent/traffic/clones -f per=day \
+            > "$RUNNER_TEMP/clones.json"
+
+      - name: Prepare archive branch
+        run: |
+          archive="$RUNNER_TEMP/clone-traffic"
+          remote_ref=$(git ls-remote --heads origin refs/heads/traffic)
+          if [ -n "$remote_ref" ]; then
+            git fetch --depth=1 origin traffic
+            git worktree add --detach "$archive" FETCH_HEAD
+          else
+            git worktree add --detach "$archive" HEAD
+            git -C "$archive" switch --orphan traffic
+          fi
+
+      - name: Merge daily statistics
+        run: python3 .github/scripts/archive_clones.py --snapshot "$RUNNER_TEMP/clones.json" --output "$RUNNER_TEMP/clone-traffic"
+
+      - name: Publish archive
+        run: |
+          cd "$RUNNER_TEMP/clone-traffic"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add clones.json clones.csv clones.svg README.md
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update daily clone traffic'
+            git push origin HEAD:refs/heads/traffic
+          fi
+          cat README.md >> "$GITHUB_STEP_SUMMARY"

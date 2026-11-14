@@ -2,6 +2,10 @@
 
 # Dingent
 
+[![Archived clones](https://raw.githubusercontent.com/Dingent/Dingent/traffic/clones.svg)](https://github.com/Dingent/Dingent/tree/traffic)
+
+Clone 数据每天自动归档，统计覆盖范围及配置见[说明](docs/clone-traffic.md)。
+
   <strong>一个功能强大且用户友好的 LLM Agent 框架，旨在简化智能应用的整个开发生命周期。</strong>
 
 ![GitHub Release Date](https://img.shields.io/github/release-date/saya-ashen/Dingent)
