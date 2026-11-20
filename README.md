@@ -1,6 +1,6 @@
 # Dingent clone traffic archive
 
-**787 archived clones** across 19 recorded UTC dates (2026-10-31 through 2026-11-18).
+**801 archived clones** across 20 recorded UTC dates (2026-10-31 through 2026-11-19).
 
 Daily data: [JSON](clones.json) · [CSV](clones.csv) · [Badge](clones.svg).
 
