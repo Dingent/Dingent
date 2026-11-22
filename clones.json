@@ -1,8 +1,8 @@
 {
   "repository": "Dingent/Dingent",
   "first_recorded_date": "2026-10-31",
-  "last_recorded_date": "2026-11-19",
-  "total_clones": 801,
+  "last_recorded_date": "2026-11-21",
+  "total_clones": 1071,
   "clones": [
     {
       "timestamp": "2026-10-31T00:00:00Z",
@@ -103,6 +103,16 @@
       "timestamp": "2026-11-19T00:00:00Z",
       "count": 14,
       "uniques": 10
+    },
+    {
+      "timestamp": "2026-11-20T00:00:00Z",
+      "count": 161,
+      "uniques": 17
+    },
+    {
+      "timestamp": "2026-11-21T00:00:00Z",
+      "count": 109,
+      "uniques": 19
     }
   ]
 }

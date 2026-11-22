@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="150" height="20" role="img" aria-label="Archived clones: 801">
-  <title>Archived clones: 801, since 2026-10-31</title>
-  <rect width="150" height="20" rx="3" fill="#555"/>
-  <path fill="#007ec6" d="M100 0h50v20H100z"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="156" height="20" role="img" aria-label="Archived clones: 1,071">
+  <title>Archived clones: 1,071, since 2026-10-31</title>
+  <rect width="156" height="20" rx="3" fill="#555"/>
+  <path fill="#007ec6" d="M100 0h56v20H100z"/>
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,sans-serif" font-size="11">
     <text x="50" y="14">Archived clones</text>
-    <text x="125.0" y="14">801</text>
+    <text x="128.0" y="14">1,071</text>
   </g>
 </svg>
